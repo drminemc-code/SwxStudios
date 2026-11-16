@@ -1,0 +1,6 @@
+{
+  "name": "SwxStudios",
+  "description": "Plugins, maps, custom models, configs, and full setups for your Minecraft server.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

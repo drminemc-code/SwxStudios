@@ -1,0 +1,305 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function isOwnerAdmin() {
+      return isVerified() && request.auth.token.email in ['randellemupas@gmail.com', 'drminemc@gmail.com'];
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUserAccount(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'xp', 'isPremium', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'avatarUrl', 'xp', 'isPremium', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == request.auth.uid && data.uid.size() <= 128
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 500))
+        && data.xp is number && data.xp >= 0 && data.xp <= 1000000
+        && data.isPremium is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateInfo(data) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'updatedAt'])
+        && data.uid is string && data.uid == request.auth.uid && data.uid.size() <= 128
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 254
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidConnection(data, providerId) {
+      return data.keys().hasAll(['uid', 'provider', 'providerUserId', 'username', 'connectedAt'])
+        && data.keys().hasOnly(['uid', 'provider', 'providerUserId', 'username', 'displayName', 'avatarUrl', 'profileUrl', 'connectedAt'])
+        && data.uid is string && data.uid == request.auth.uid && data.uid.size() <= 128
+        && data.provider is string && data.provider == providerId
+        && data.provider in ['google', 'discord', 'github', 'microsoft', 'twitch']
+        && data.providerUserId is string && data.providerUserId.size() >= 1 && data.providerUserId.size() <= 128
+        && data.username is string && data.username.size() >= 1 && data.username.size() <= 100
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100))
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 500))
+        && (!('profileUrl' in data) || (data.profileUrl is string && data.profileUrl.size() <= 500))
+        && data.connectedAt is timestamp;
+    }
+
+    function isValidResourcePackage(data, resourceId) {
+      return data.keys().hasAll([
+          'id', 'title', 'subtitle', 'description', 'category',
+          'downloads', 'rating', 'ratingCount', 'version', 'mcVersions',
+          'fileSize', 'author', 'updatedAt', 'popular', 'exclusive',
+          'tags', 'artwork', 'accentColor', 'features',
+          'fileName', 'fileExtension', 'downloadUrl', 'createdBy', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'title', 'subtitle', 'description', 'category',
+          'downloads', 'views', 'rating', 'ratingCount', 'version', 'mcVersions',
+          'fileSize', 'author', 'publishedAt', 'updatedAt', 'popular', 'exclusive',
+          'tier', 'priceLabel',
+          'openSource', 'drmFree', 'unobfuscated', 'aiMarketing', 'aiProduct',
+          'resourceType', 'gameModes', 'supportedSoftware', 'supportedVersions',
+          'supportedLanguages', 'dependencies', 'changelog', 'demoVideoUrl',
+          'tags', 'artwork', 'accentColor', 'features',
+          'fileName', 'fileExtension', 'downloadUrl', 'createdBy', 'createdAt'
+        ])
+        && data.id is string && data.id == resourceId && data.id.size() <= 128
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 100
+        && data.subtitle is string && data.subtitle.size() >= 2 && data.subtitle.size() <= 160
+        && data.description is string && data.description.size() >= 3 && data.description.size() <= 3000
+        && data.category is string && data.category in ['plugins', 'configs', 'setups', 'models', 'maps', 'skripts', 'clients', 'bots', 'source']
+        && data.downloads is number && data.downloads >= 0 && data.downloads <= 100000000
+        && (!('views' in data) || (data.views is number && data.views >= 0 && data.views <= 1000000000))
+        && data.rating is number && data.rating >= 0 && data.rating <= 10
+        && data.ratingCount is number && data.ratingCount >= 0 && data.ratingCount <= 10000000
+        && data.version is string && data.version.size() >= 1 && data.version.size() <= 40
+        && data.mcVersions is string && data.mcVersions.size() >= 1 && data.mcVersions.size() <= 60
+        && data.fileSize is string && data.fileSize.size() >= 1 && data.fileSize.size() <= 32
+        && data.author is string && data.author.size() >= 1 && data.author.size() <= 80
+        && (!('publishedAt' in data) || (data.publishedAt is string && data.publishedAt.size() <= 40))
+        && data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 40
+        && data.popular is bool
+        && data.exclusive is bool
+        && (!('tier' in data) || (data.tier is string && data.tier in ['free', 'paid', 'premium', 'ultimate']))
+        && (!('priceLabel' in data) || (data.priceLabel is string && data.priceLabel.size() <= 24))
+        && (!('openSource' in data) || data.openSource is bool)
+        && (!('drmFree' in data) || data.drmFree is bool)
+        && (!('unobfuscated' in data) || data.unobfuscated is bool)
+        && (!('aiMarketing' in data) || data.aiMarketing is bool)
+        && (!('aiProduct' in data) || data.aiProduct is bool)
+        && (!('resourceType' in data) || (data.resourceType is string && data.resourceType.size() <= 40))
+        && (!('gameModes' in data) || (data.gameModes is list && data.gameModes.size() <= 10 && (data.gameModes.size() == 0 || (data.gameModes[0] is string && data.gameModes[0].size() <= 40))))
+        && (!('supportedSoftware' in data) || (data.supportedSoftware is list && data.supportedSoftware.size() <= 10 && (data.supportedSoftware.size() == 0 || (data.supportedSoftware[0] is string && data.supportedSoftware[0].size() <= 40))))
+        && (!('supportedVersions' in data) || (data.supportedVersions is list && data.supportedVersions.size() <= 12 && (data.supportedVersions.size() == 0 || (data.supportedVersions[0] is string && data.supportedVersions[0].size() <= 32))))
+        && (!('supportedLanguages' in data) || (data.supportedLanguages is list && data.supportedLanguages.size() <= 12 && (data.supportedLanguages.size() == 0 || (data.supportedLanguages[0] is string && data.supportedLanguages[0].size() <= 40))))
+        && (!('dependencies' in data) || (data.dependencies is list && data.dependencies.size() <= 15 && (data.dependencies.size() == 0 || (data.dependencies[0] is string && data.dependencies[0].size() <= 80))))
+        && (!('changelog' in data) || (data.changelog is list && data.changelog.size() <= 20 && (data.changelog.size() == 0 || data.changelog[0] is map)))
+        && (!('demoVideoUrl' in data) || (data.demoVideoUrl is string && data.demoVideoUrl.size() <= 500))
+        && data.tags is list && data.tags.size() <= 10 && (data.tags.size() == 0 || (data.tags[0] is string && data.tags[0].size() <= 40))
+        && data.artwork is string && data.artwork.size() >= 1 && data.artwork.size() <= 40
+        && data.accentColor is string && data.accentColor.size() >= 4 && data.accentColor.size() <= 20
+        && data.features is list && data.features.size() <= 10 && (data.features.size() == 0 || (data.features[0] is string && data.features[0].size() <= 160))
+        && data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 160
+        && data.fileExtension is string && data.fileExtension in ['jar', 'zip', 'rar', '7z', 'gz', 'tar']
+        && data.downloadUrl is string && data.downloadUrl.size() >= 1 && data.downloadUrl.size() <= 500
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdAt is timestamp;
+    }
+
+    function isValidSiteSettings(data) {
+      return data.keys().hasAll(['announcementVisible', 'announcementLabel', 'announcementText', 'communityEnabled', 'updatedAt'])
+        && data.keys().hasOnly(['announcementVisible', 'announcementLabel', 'announcementText', 'communityEnabled', 'updatedAt'])
+        && data.announcementVisible is bool
+        && data.announcementLabel is string && data.announcementLabel.size() <= 60
+        && data.announcementText is string && data.announcementText.size() <= 240
+        && data.communityEnabled is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidThread(data) {
+      return data.keys().hasAll(['authorId', 'authorName', 'authorRole', 'title', 'topic', 'body', 'upvotes', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['authorId', 'authorName', 'authorRole', 'title', 'topic', 'body', 'upvotes', 'createdAt', 'updatedAt'])
+        && data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80
+        && data.authorRole is string && data.authorRole.size() >= 1 && data.authorRole.size() <= 40
+        && data.title is string && data.title.size() >= 3 && data.title.size() <= 160
+        && data.topic is string && data.topic in ['Plugins Help', 'Server Setups', 'Showcase', 'Requests']
+        && data.body is string && data.body.size() >= 3 && data.body.size() <= 3000
+        && data.upvotes is number && data.upvotes >= 0 && data.upvotes <= 1000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidReply(data, threadId) {
+      return data.keys().hasAll(['threadId', 'authorId', 'authorName', 'authorRole', 'content', 'createdAt'])
+        && data.keys().hasOnly(['threadId', 'authorId', 'authorName', 'authorRole', 'content', 'createdAt'])
+        && data.threadId is string && data.threadId == threadId && data.threadId.size() <= 128
+        && data.authorId is string && data.authorId == request.auth.uid && data.authorId.size() <= 128
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80
+        && data.authorRole is string && data.authorRole.size() >= 1 && data.authorRole.size() <= 40
+        && data.content is string && data.content.size() >= 1 && data.content.size() <= 2000
+        && data.createdAt is timestamp;
+    }
+
+    // User profile (owner-only, non-PII)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserAccount(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserAccount(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'xp', 'isPremium', 'updatedAt']);
+      allow delete: if false;
+
+      // Isolated Private PII
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && docId == 'info' && isOwner(userId);
+        allow list: if false;
+        allow create, update: if isValidId(userId)
+          && isValidId(docId)
+          && docId == 'info'
+          && isOwner(userId)
+          && isValidPrivateInfo(incoming())
+          && incoming().updatedAt == request.time;
+        allow delete: if false;
+      }
+
+      // Linked OAuth Accounts
+      match /connections/{providerId} {
+        allow get: if isValidId(userId) && isValidId(providerId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId);
+        allow create, update: if isValidId(userId)
+          && isValidId(providerId)
+          && isOwner(userId)
+          && isValidConnection(incoming(), providerId)
+          && incoming().connectedAt == request.time;
+        allow delete: if isValidId(userId) && isValidId(providerId) && isOwner(userId);
+      }
+    }
+
+    // Owner-Managed Published Resources Catalog
+    match /resources/{resourceId} {
+      allow get: if isValidId(resourceId);
+      allow list: if true;
+      allow create: if isValidId(resourceId)
+        && isOwnerAdmin()
+        && isValidResourcePackage(incoming(), resourceId)
+        && incoming().createdBy == request.auth.uid
+        && incoming().downloads == 0
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(resourceId)
+        && isValidResourcePackage(incoming(), resourceId)
+        && incoming().id == existing().id
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && (
+          (
+            isOwnerAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'subtitle', 'description', 'category', 'version',
+              'mcVersions', 'fileSize', 'author', 'publishedAt', 'updatedAt', 'popular',
+              'exclusive', 'tier', 'priceLabel',
+              'openSource', 'drmFree', 'unobfuscated', 'aiMarketing', 'aiProduct',
+              'resourceType', 'gameModes', 'supportedSoftware', 'supportedVersions',
+              'supportedLanguages', 'dependencies', 'changelog', 'demoVideoUrl',
+              'tags', 'artwork', 'accentColor', 'features', 'fileName', 'fileExtension', 'downloadUrl'
+            ])
+          ) || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['downloads'])
+            && incoming().downloads == existing().downloads + 1
+          ) || (
+            incoming().diff(existing()).affectedKeys().hasOnly(['views'])
+            && ((!('views' in existing()) && incoming().views == 1) || ('views' in existing() && incoming().views == existing().views + 1))
+          ) || (
+            isVerified()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['rating', 'ratingCount'])
+            && incoming().ratingCount == existing().ratingCount + 1
+          )
+        );
+      allow delete: if isValidId(resourceId) && isOwnerAdmin();
+    }
+
+    // Community Threads
+    match /threads/{threadId} {
+      allow get: if isValidId(threadId);
+      allow list: if true;
+      allow create: if isValidId(threadId)
+        && isVerified()
+        && isValidThread(incoming())
+        && incoming().authorId == request.auth.uid
+        && incoming().upvotes == 1
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(threadId)
+        && isVerified()
+        && isValidThread(incoming())
+        && incoming().authorId == existing().authorId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (existing().authorId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'body', 'topic', 'updatedAt'])) ||
+          (incoming().diff(existing()).affectedKeys().hasOnly(['upvotes', 'updatedAt']) && (incoming().upvotes == existing().upvotes + 1 || incoming().upvotes == existing().upvotes - 1))
+        );
+      allow delete: if isValidId(threadId) && ((isVerified() && existing().authorId == request.auth.uid) || isOwnerAdmin());
+
+      match /replies/{replyId} {
+        allow get: if isValidId(threadId) && isValidId(replyId);
+        allow list: if isValidId(threadId);
+        allow create: if isValidId(threadId)
+          && isValidId(replyId)
+          && isVerified()
+          && exists(/databases/$(database)/documents/threads/$(threadId))
+          && isValidReply(incoming(), threadId)
+          && incoming().createdAt == request.time;
+        allow update: if false;
+        allow delete: if isValidId(threadId) && isValidId(replyId) && ((isVerified() && existing().authorId == request.auth.uid) || isOwnerAdmin());
+      }
+    }
+
+    // Owner-Managed Global Site Settings
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId) && settingId == 'site';
+      allow list: if false;
+      allow create, update: if isValidId(settingId)
+        && settingId == 'site'
+        && isOwnerAdmin()
+        && isValidSiteSettings(incoming())
+        && incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+  }
+}
