@@ -134,12 +134,42 @@ service cloud.firestore {
 
     function isValidSiteSettings(data) {
       return data.keys().hasAll(['announcementVisible', 'announcementLabel', 'announcementText', 'communityEnabled', 'updatedAt'])
-        && data.keys().hasOnly(['announcementVisible', 'announcementLabel', 'announcementText', 'communityEnabled', 'updatedAt'])
+        && data.keys().hasOnly(['announcementVisible', 'announcementLabel', 'announcementText', 'communityEnabled', 'heroHeadline', 'updatedBy', 'updatedAt'])
         && data.announcementVisible is bool
         && data.announcementLabel is string && data.announcementLabel.size() <= 60
         && data.announcementText is string && data.announcementText.size() <= 240
         && data.communityEnabled is bool
+        && (!('heroHeadline' in data) || (data.heroHeadline is string && data.heroHeadline.size() <= 120))
+        && (!('updatedBy' in data) || (data.updatedBy is string && data.updatedBy.size() <= 128))
         && data.updatedAt is timestamp;
+    }
+
+    function isValidServerListing(data, serverId) {
+      return data.keys().hasAll(['id', 'name', 'address', 'edition', 'version', 'motd', 'gameModes', 'approved', 'featured', 'votes', 'submittedBy', 'submittedByName', 'createdAt'])
+        && data.keys().hasOnly([
+          'id', 'name', 'address', 'edition', 'version', 'motd',
+          'description', 'bedrockAddress', 'tps', 'mspt', 'pingMs', 'topPlayers',
+          'gameModes', 'approved', 'featured', 'votes', 'submittedBy', 'submittedByName', 'createdAt'
+        ])
+        && data.id is string && data.id == serverId && data.id.size() <= 128
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 80
+        && data.address is string && data.address.size() >= 3 && data.address.size() <= 120
+        && data.edition is string && data.edition in ['Java', 'Bedrock', 'Crossplay']
+        && data.version is string && data.version.size() >= 1 && data.version.size() <= 40
+        && data.motd is string && data.motd.size() >= 1 && data.motd.size() <= 240
+        && (!('description' in data) || (data.description is string && data.description.size() <= 1500))
+        && (!('bedrockAddress' in data) || (data.bedrockAddress is string && data.bedrockAddress.size() <= 120))
+        && (!('tps' in data) || (data.tps is number && data.tps >= 0 && data.tps <= 25))
+        && (!('mspt' in data) || (data.mspt is number && data.mspt >= 0 && data.mspt <= 5000))
+        && (!('pingMs' in data) || (data.pingMs is number && data.pingMs >= 0 && data.pingMs <= 10000))
+        && (!('topPlayers' in data) || (data.topPlayers is list && data.topPlayers.size() <= 15 && (data.topPlayers.size() == 0 || (data.topPlayers[0] is string && data.topPlayers[0].size() <= 64))))
+        && data.gameModes is list && data.gameModes.size() <= 8 && (data.gameModes.size() == 0 || (data.gameModes[0] is string && data.gameModes[0].size() <= 32))
+        && data.approved is bool
+        && data.featured is bool
+        && data.votes is number && data.votes >= 0 && data.votes <= 10000000
+        && data.submittedBy is string && data.submittedBy.size() >= 1 && data.submittedBy.size() <= 128
+        && data.submittedByName is string && data.submittedByName.size() >= 1 && data.submittedByName.size() <= 80
+        && data.createdAt is timestamp;
     }
 
     function isValidThread(data) {
@@ -300,6 +330,37 @@ service cloud.firestore {
         && isValidSiteSettings(incoming())
         && incoming().updatedAt == request.time;
       allow delete: if false;
+    }
+
+    // Minecraft Server Directory Listings
+    match /servers/{serverId} {
+      allow get: if isValidId(serverId) && (existing().approved == true || isOwnerAdmin() || (isVerified() && existing().submittedBy == request.auth.uid));
+      allow list: if existing().approved == true || isOwnerAdmin();
+      allow create: if isValidId(serverId)
+        && isVerified()
+        && isValidServerListing(incoming(), serverId)
+        && incoming().submittedBy == request.auth.uid
+        && incoming().votes == 0
+        && (isOwnerAdmin() || (incoming().approved == false && incoming().featured == false))
+        && incoming().createdAt == request.time;
+      allow update: if isValidId(serverId)
+        && isValidServerListing(incoming(), serverId)
+        && incoming().id == existing().id
+        && incoming().submittedBy == existing().submittedBy
+        && incoming().createdAt == existing().createdAt
+        && (
+          (isOwnerAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'address', 'edition', 'version', 'motd', 'description',
+            'bedrockAddress', 'tps', 'mspt', 'pingMs', 'topPlayers', 'gameModes',
+            'approved', 'featured'
+          ])) ||
+          (isVerified() && existing().submittedBy == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'address', 'edition', 'version', 'motd', 'description',
+            'bedrockAddress', 'tps', 'mspt', 'pingMs', 'topPlayers', 'gameModes'
+          ])) ||
+          (isVerified() && existing().approved == true && incoming().diff(existing()).affectedKeys().hasOnly(['votes']) && incoming().votes == existing().votes + 1)
+        );
+      allow delete: if isValidId(serverId) && (isOwnerAdmin() || (isVerified() && existing().submittedBy == request.auth.uid));
     }
   }
 }

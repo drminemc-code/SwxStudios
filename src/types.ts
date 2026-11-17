@@ -9,7 +9,16 @@ export type CategoryId =
   | 'bots'
   | 'source';
 
-export type NavTab = 'home' | 'community' | 'downloads' | 'exclusive' | 'levels' | 'admin';
+export type NavTab =
+  | 'home'
+  | 'tools'
+  | 'servers'
+  | 'guides'
+  | 'community'
+  | 'downloads'
+  | 'exclusive'
+  | 'levels'
+  | 'admin';
 
 export type ArchiveExtension = 'jar' | 'zip' | 'rar' | '7z' | 'gz' | 'tar';
 
@@ -168,5 +177,67 @@ export interface DisplayIdentity {
   emailVerified: boolean;
   isFirebaseUser: boolean;
   primaryProvider: AuthProviderId | 'email' | null;
+}
+
+export type ServerEdition = 'Java' | 'Bedrock' | 'Crossplay';
+
+export interface LiveServerPlayerSample {
+  uuid: string;
+  name: string;
+}
+
+export interface LiveServerStatus {
+  loading: boolean;
+  online: boolean | null;
+  host?: string;
+  resolvedHost?: string | null;
+  ip?: string | null;
+  port?: number;
+  version?: string | null;
+  software?: string | null;
+  pingMs?: number | null;
+  playersOnline: number;
+  playersMax: number;
+  playerSample?: LiveServerPlayerSample[];
+  motdLines?: string[];
+  iconBase64?: string | null;
+  checkedAt?: string;
+  error?: string;
+}
+
+export interface ServerTelemetrySnapshot {
+  serverKey: string;
+  address: string;
+  tps: number | null;
+  mspt: number | null;
+  avgPingMs: number | null;
+  playersOnline: number | null;
+  playersMax: number | null;
+  topPlayers: Array<{ name: string; stat: string }>;
+  source: string;
+  updatedAt: string;
+}
+
+export interface MinecraftServerListing {
+  id: string;
+  name: string;
+  address: string;
+  edition: ServerEdition;
+  version: string;
+  motd: string;
+  description?: string;
+  bedrockAddress?: string;
+  tps?: number;
+  mspt?: number;
+  pingMs?: number;
+  topPlayers?: string[];
+  gameModes: string[];
+  approved: boolean;
+  featured: boolean;
+  votes: number;
+  submittedBy: string;
+  submittedByName: string;
+  createdAt?: string;
+  isBaselineLive?: boolean;
 }
 

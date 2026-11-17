@@ -22,7 +22,7 @@ export const AnnouncementBanner: React.FC<AnnouncementBannerProps> = ({
     <div className="border-b border-zinc-800/80 bg-[#0d0d11]">
       <div className="mx-auto flex max-w-[1200px] items-center justify-between gap-4 px-4 py-2 text-xs sm:px-6">
         <div className="flex min-w-0 items-center gap-2.5 text-zinc-300">
-          <span className="shrink-0 font-semibold text-amber-300">{label}</span>
+          <span className="shrink-0 font-semibold text-rose-400">{label}</span>
           <span aria-hidden="true" className="text-zinc-700">/</span>
           <p className="truncate text-zinc-400">{message}</p>
         </div>

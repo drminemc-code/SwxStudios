@@ -12,6 +12,12 @@ import {
 } from 'lucide-react';
 import { AuthProviderId, OAuthProviderStatus } from '../types';
 import { validateSignInInput, validateSignUpInput } from '../utils/authLogic';
+import {
+  buildMinecraftHeadAvatarUrl,
+  deriveMinecraftIgnSuggestion,
+  normalizeMinecraftUsername,
+} from '../utils/skinLogic';
+import { MinecraftHeadAvatar } from './MinecraftHeadAvatar';
 import { ProviderIcon } from './ProviderIcon';
 
 interface SetupGuideInfo {
@@ -27,8 +33,13 @@ interface AuthModalProps {
   initialMode?: 'signin' | 'signup';
   oauthStatuses: Partial<Record<'discord' | 'github' | 'twitch', OAuthProviderStatus>>;
   onClose: () => void;
-  onEmailSignIn: (email: string, password: string) => Promise<void>;
-  onEmailSignUp: (displayName: string, email: string, password: string) => Promise<void>;
+  onEmailSignIn: (email: string, password: string, mcAvatarUrl?: string | null) => Promise<void>;
+  onEmailSignUp: (
+    displayName: string,
+    email: string,
+    password: string,
+    mcAvatarUrl?: string | null
+  ) => Promise<void>;
   onSendPasswordReset: (email: string) => Promise<void>;
   onFirebaseProviderAuth: (provider: 'google' | 'microsoft') => Promise<void>;
   onOAuthPopupAuth: (provider: 'discord' | 'github' | 'twitch') => Promise<{
@@ -51,6 +62,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 }) => {
   const [mode, setMode] = useState<'signin' | 'signup'>(initialMode);
   const [displayName, setDisplayName] = useState('');
+  const [mcIgn, setMcIgn] = useState('');
+  const [mcHeadStyle, setMcHeadStyle] = useState<'2d' | '3d'>('2d');
+  const [useMcHeadAvatar, setUseMcHeadAvatar] = useState(true);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showMoreProviders, setShowMoreProviders] = useState(false);
@@ -59,6 +73,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [infoMsg, setInfoMsg] = useState<string | null>(null);
   const [setupGuide, setSetupGuide] = useState<SetupGuideInfo | null>(null);
   const [copiedCallback, setCopiedCallback] = useState(false);
+
+  const previewMcIgn = deriveMinecraftIgnSuggestion({
+    mcUsername: mcIgn,
+    displayName: mode === 'signup' ? displayName : '',
+    email,
+  });
 
   useEffect(() => {
     if (open) {
@@ -96,15 +116,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       return;
     }
 
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const explicitSignInIgn = normalizeMinecraftUsername(mcIgn);
+    const computedAvatarUrl =
+      mode === 'signup'
+        ? useMcHeadAvatar
+          ? buildMinecraftHeadAvatarUrl(previewMcIgn, {
+              size: 128,
+              style: mcHeadStyle,
+              origin,
+            })
+          : null
+        : useMcHeadAvatar && explicitSignInIgn
+          ? buildMinecraftHeadAvatarUrl(explicitSignInIgn, {
+              size: 128,
+              style: mcHeadStyle,
+              origin,
+            })
+          : null;
+
     setSubmitting('email');
     try {
       if (mode === 'signup') {
-        await onEmailSignUp(displayName.trim(), email.trim(), password);
+        await onEmailSignUp(displayName.trim(), email.trim(), password, computedAvatarUrl);
         setInfoMsg(
           'Account created! Check your inbox for the verification link to unlock cloud sync & community posting.'
         );
       } else {
-        await onEmailSignIn(email.trim(), password);
+        await onEmailSignIn(email.trim(), password, computedAvatarUrl);
         onClose();
       }
     } catch (err) {
@@ -361,6 +400,91 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* Email & Password Form */}
         <form onSubmit={handleEmailSubmit} className="space-y-3" noValidate>
+          {/* Live Minecraft Skin Head Face Avatar Card (works on both Sign In & Sign Up) */}
+          <div className="rounded-lg border border-zinc-800 bg-zinc-950/90 p-3">
+            <div className="flex items-center gap-3">
+              <MinecraftHeadAvatar
+                username={previewMcIgn}
+                styleMode={mcHeadStyle}
+                alt={`${previewMcIgn} Minecraft skin head`}
+                className="h-12 w-12 shrink-0 rounded-md border border-zinc-700 bg-[#0b0b0e]"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <label
+                    htmlFor="auth-mc-ign"
+                    className="block text-[11px] font-semibold text-zinc-200"
+                  >
+                    Minecraft Skin Head ({previewMcIgn})
+                  </label>
+                  <div className="inline-flex rounded border border-zinc-800 bg-[#0b0b0e] p-0.5 text-[10px]">
+                    <button
+                      type="button"
+                      onClick={() => setMcHeadStyle('2d')}
+                      className={`rounded px-1.5 py-0.5 font-semibold ${
+                        mcHeadStyle === '2d'
+                          ? 'bg-rose-600 text-white'
+                          : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      2D Face
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMcHeadStyle('3d')}
+                      className={`rounded px-1.5 py-0.5 font-semibold ${
+                        mcHeadStyle === '3d'
+                          ? 'bg-rose-600 text-white'
+                          : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      3D Head
+                    </button>
+                  </div>
+                </div>
+
+                <input
+                  id="auth-mc-ign"
+                  type="text"
+                  maxLength={16}
+                  value={mcIgn}
+                  onChange={(e) => setMcIgn(e.target.value)}
+                  placeholder="Optional Java IGN (e.g. Notch, Dream)"
+                  className="mt-1.5 h-8 w-full rounded border border-zinc-800 bg-[#0b0b0e] px-2.5 font-display-mono text-[11px] text-zinc-100 placeholder:text-zinc-600 focus:border-rose-500/60 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[10px]">
+              <label className="inline-flex cursor-pointer items-center gap-1.5 text-zinc-400">
+                <input
+                  type="checkbox"
+                  checked={useMcHeadAvatar}
+                  onChange={(e) => setUseMcHeadAvatar(e.target.checked)}
+                  className="h-3.5 w-3.5 accent-rose-600"
+                />
+                <span>
+                  {mode === 'signup'
+                    ? 'Use Minecraft head face as profile avatar'
+                    : 'Sync typed IGN head on sign in'}
+                </span>
+              </label>
+
+              <div className="flex items-center gap-1">
+                {['Notch', 'Dream', 'Steve'].map((sample) => (
+                  <button
+                    key={sample}
+                    type="button"
+                    onClick={() => setMcIgn(sample)}
+                    className="rounded border border-zinc-800 bg-[#0b0b0e] px-1.5 py-0.5 font-display-mono text-zinc-400 hover:border-rose-500/50 hover:text-white"
+                  >
+                    {sample}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           {mode === 'signup' && (
             <div>
               <label htmlFor="auth-username" className="block text-xs font-medium text-zinc-300">

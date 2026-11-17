@@ -29,6 +29,7 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
 } from 'firebase/firestore';
 import { AccountModal } from './components/AccountModal';
 import { AdminPanelView } from './components/AdminPanelView';
@@ -39,14 +40,18 @@ import { CommunityView } from './components/CommunityView';
 import { DownloadsView } from './components/DownloadsView';
 import { ExclusiveView } from './components/ExclusiveView';
 import { Footer } from './components/Footer';
+import { GuidesView } from './components/GuidesView';
 import { HeroSection } from './components/HeroSection';
 import { LevelsView } from './components/LevelsView';
-import { Navbar } from './components/Navbar';
+import { Navbar, WorkspaceSidebar } from './components/Navbar';
 import { PremiumModal } from './components/PremiumModal';
 import { ResourceCard } from './components/ResourceCard';
 import { ResourceModal } from './components/ResourceModal';
+import { ServersView } from './components/ServersView';
 import { SponsorModal } from './components/SponsorModal';
+import { TOOL_DIRECTORY, ToolsView, type ToolId } from './components/ToolsView';
 import { CATEGORIES, INITIAL_RESOURCES, INITIAL_THREADS } from './data/catalog';
+import { BASELINE_LIVE_SERVERS } from './data/liveServers';
 import {
   auth,
   db,
@@ -63,11 +68,14 @@ import {
   CategoryId,
   CommunityThread,
   ConnectedAccountInfo,
+  LiveServerStatus,
   MembershipTier,
+  MinecraftServerListing,
   NavTab,
   OAuthProviderStatus,
   ResourceItem,
   ResourceTierFilter,
+  ServerTelemetrySnapshot,
   SiteSettings,
 } from './types';
 import {
@@ -93,6 +101,7 @@ import {
   getEffectiveResourceTier,
   pickRandomResource,
 } from './utils/catalogLogic';
+import { buildServerRecord, type ServerDraftInput } from './utils/mcToolsLogic';
 
 const STORAGE_KEY = 'swxstudios_state_v2';
 
@@ -199,6 +208,10 @@ export default function App() {
   const [heroQuery, setHeroQuery] = useState('');
   const [heroCategory, setHeroCategory] = useState<CategoryId | 'all'>('all');
   const [heroTier, setHeroTier] = useState<ResourceTierFilter>('all');
+  const [activeToolId, setActiveToolId] = useState<ToolId>('motd');
+  const [toolsViewMode, setToolsViewMode] = useState<'grid' | 'workbench'>('grid');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
   // Modals
   const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
@@ -225,7 +238,13 @@ export default function App() {
   >({});
   const [cloudThreads, setCloudThreads] = useState<CommunityThread[]>([]);
   const [cloudResources, setCloudResources] = useState<ResourceItem[]>([]);
+  const [cloudServers, setCloudServers] = useState<MinecraftServerListing[]>([]);
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
+  const [liveStatusMap, setLiveStatusMap] = useState<Record<string, LiveServerStatus>>({});
+  const [telemetryMap, setTelemetryMap] = useState<Record<string, ServerTelemetrySnapshot>>({});
   const [siteSettings, setSiteSettings] = useState<SiteSettings>(DEFAULT_SITE_SETTINGS);
+  const liveInFlightRef = useRef<Set<string>>(new Set());
+  const homePingTriggeredRef = useRef<Set<string>>(new Set());
 
   // Notification Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -709,8 +728,200 @@ export default function App() {
     [firebaseUser]
   );
 
+  // Listen to Minecraft servers directory (filter approved=true for public so Firestore list rules match)
+  useEffect(() => {
+    if (!authReady) return;
+    const serversQuery = isOwner
+      ? query(collection(db, 'servers'), limit(100))
+      : query(collection(db, 'servers'), where('approved', '==', true), limit(100));
+
+    const unsub = onSnapshot(
+      serversQuery,
+      (snap) => {
+        const items: MinecraftServerListing[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as Partial<MinecraftServerListing>;
+          if (!d.name || !d.address) return;
+          items.push({
+            id: docSnap.id,
+            name: d.name,
+            address: d.address,
+            edition: d.edition || 'Java',
+            version: d.version || '1.21.4',
+            motd: d.motd || '',
+            description: typeof d.description === 'string' ? d.description : undefined,
+            bedrockAddress: typeof d.bedrockAddress === 'string' ? d.bedrockAddress : undefined,
+            tps: typeof d.tps === 'number' ? d.tps : undefined,
+            mspt: typeof d.mspt === 'number' ? d.mspt : undefined,
+            pingMs: typeof d.pingMs === 'number' ? d.pingMs : undefined,
+            topPlayers: Array.isArray(d.topPlayers)
+              ? d.topPlayers.filter((item): item is string => typeof item === 'string')
+              : undefined,
+            gameModes: Array.isArray(d.gameModes) ? d.gameModes : [],
+            approved: Boolean(d.approved),
+            featured: Boolean(d.featured),
+            votes: typeof d.votes === 'number' ? d.votes : 0,
+            submittedBy: d.submittedBy || '',
+            submittedByName: d.submittedByName || 'Member',
+          });
+        });
+        setCloudServers(items);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'servers');
+      }
+    );
+    return () => unsub();
+  }, [authReady, isOwner]);
+
+  // Fetch server telemetry snapshots (TPS / MSPT / Avg Ping / Top Players)
+  useEffect(() => {
+    fetch('/api/mc/telemetry')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { snapshots?: Record<string, ServerTelemetrySnapshot> } | null) => {
+        if (data?.snapshots) {
+          setTelemetryMap(data.snapshots);
+        }
+      })
+      .catch(() => {
+        // Ignore transient fetch failure
+      });
+  }, []);
+
+  const allDirectoryServers = useMemo(() => {
+    const existingAddresses = new Set(
+      cloudServers.map((s) => s.address.trim().toLowerCase())
+    );
+    const baselineExtras = BASELINE_LIVE_SERVERS.filter(
+      (b) => !existingAddresses.has(b.address.trim().toLowerCase())
+    );
+    return [...cloudServers, ...baselineExtras];
+  }, [cloudServers]);
+
+  const checkServerLiveStatus = useCallback(
+    async (srv: MinecraftServerListing, fresh = false) => {
+      if (!srv.address) return;
+      if (liveInFlightRef.current.has(srv.id) && !fresh) return;
+      liveInFlightRef.current.add(srv.id);
+
+      setLiveStatusMap((prev) => ({
+        ...prev,
+        [srv.id]: {
+          ...(prev[srv.id] || { online: null, playersOnline: 0, playersMax: 0 }),
+          loading: true,
+        },
+      }));
+
+      const apiEdition = srv.edition === 'Bedrock' ? 'bedrock' : 'java';
+      try {
+        const res = await fetch(
+          `/api/mc/status?host=${encodeURIComponent(srv.address.trim())}&edition=${apiEdition}${
+            fresh ? '&fresh=1' : ''
+          }`
+        );
+        const data = (await res.json()) as {
+          online?: boolean;
+          host?: string;
+          resolvedHost?: string | null;
+          ip?: string | null;
+          port?: number;
+          version?: string | null;
+          software?: string | null;
+          pingMs?: number | null;
+          playersOnline?: number;
+          playersMax?: number;
+          playerSample?: Array<{ uuid: string; name: string }>;
+          motdLines?: string[];
+          iconBase64?: string | null;
+          checkedAt?: string;
+          error?: string;
+        };
+
+        if (!res.ok) {
+          setLiveStatusMap((prev) => ({
+            ...prev,
+            [srv.id]: {
+              loading: false,
+              online: false,
+              playersOnline: 0,
+              playersMax: 0,
+              error: data.error || 'Could not reach server',
+            },
+          }));
+          return;
+        }
+
+        setLiveStatusMap((prev) => ({
+          ...prev,
+          [srv.id]: {
+            loading: false,
+            online: Boolean(data.online),
+            host: data.host || srv.address,
+            resolvedHost: data.resolvedHost ?? null,
+            ip: data.ip ?? null,
+            port: data.port,
+            version: data.version ?? null,
+            software: data.software ?? null,
+            pingMs: typeof data.pingMs === 'number' ? data.pingMs : null,
+            playersOnline: typeof data.playersOnline === 'number' ? data.playersOnline : 0,
+            playersMax: typeof data.playersMax === 'number' ? data.playersMax : 0,
+            playerSample: Array.isArray(data.playerSample) ? data.playerSample : [],
+            motdLines: Array.isArray(data.motdLines) ? data.motdLines : [],
+            iconBase64: data.iconBase64 ?? null,
+            checkedAt: data.checkedAt || new Date().toISOString(),
+          },
+        }));
+      } catch {
+        setLiveStatusMap((prev) => ({
+          ...prev,
+          [srv.id]: {
+            loading: false,
+            online: false,
+            playersOnline: 0,
+            playersMax: 0,
+            error: 'Status check failed',
+          },
+        }));
+      } finally {
+        liveInFlightRef.current.delete(srv.id);
+      }
+    },
+    []
+  );
+
+  const refreshAllServersLive = useCallback(
+    async (targets: MinecraftServerListing[], fresh = false) => {
+      const batchSize = 4;
+      for (let i = 0; i < targets.length; i += batchSize) {
+        const chunk = targets.slice(i, i + batchSize);
+        await Promise.all(chunk.map((srv) => checkServerLiveStatus(srv, fresh)));
+      }
+    },
+    [checkServerLiveStatus]
+  );
+
   const activeThreads = cloudThreads.length > 0 ? cloudThreads : state.threads;
   const activeResources = cloudResources;
+  const approvedServers = useMemo(
+    () =>
+      allDirectoryServers
+        .filter((s) => s.approved)
+        .sort((a, b) => {
+          if (a.featured !== b.featured) return a.featured ? -1 : 1;
+          return b.votes - a.votes;
+        }),
+    [allDirectoryServers]
+  );
+
+  // Auto-ping Homepage Featured Servers once when visible
+  useEffect(() => {
+    if (activeTab !== 'home') return;
+    const featuredSubset = approvedServers.slice(0, 4);
+    const pending = featuredSubset.filter((srv) => !homePingTriggeredRef.current.has(srv.id));
+    if (pending.length === 0) return;
+    pending.forEach((srv) => homePingTriggeredRef.current.add(srv.id));
+    void refreshAllServersLive(pending, false);
+  }, [activeTab, approvedServers, refreshAllServersLive]);
 
   const selectedResource = useMemo(
     () => activeResources.find((r) => r.id === selectedResourceId) ?? null,
@@ -761,7 +972,12 @@ export default function App() {
   );
 
   const persistUserMetrics = useCallback(
-    async (updates: { xp?: number; isPremium?: boolean; displayName?: string }) => {
+    async (updates: {
+      xp?: number;
+      isPremium?: boolean;
+      displayName?: string;
+      avatarUrl?: string;
+    }) => {
       if (!auth.currentUser || !auth.currentUser.emailVerified) return;
       const uid = auth.currentUser.uid;
       try {
@@ -777,9 +993,26 @@ export default function App() {
   );
 
   // Auth Actions
-  const handleEmailSignIn = async (email: string, password: string) => {
+  const handleEmailSignIn = async (
+    email: string,
+    password: string,
+    mcAvatarUrl?: string | null
+  ) => {
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
+      if (mcAvatarUrl) {
+        const cleanAvatar = clampString(mcAvatarUrl, BLUEPRINT_LIMITS.URL_MAX);
+        if (cleanAvatar) {
+          await updateProfile(cred.user, { photoURL: cleanAvatar });
+          setAuthVersion((v) => v + 1);
+          if (cred.user.emailVerified) {
+            void updateDoc(doc(db, 'users', cred.user.uid), {
+              avatarUrl: cleanAvatar,
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+          }
+        }
+      }
       showToast(
         cred.user.emailVerified
           ? `Welcome back, ${cred.user.displayName || email}`
@@ -790,11 +1023,19 @@ export default function App() {
     }
   };
 
-  const handleEmailSignUp = async (displayName: string, email: string, password: string) => {
+  const handleEmailSignUp = async (
+    displayName: string,
+    email: string,
+    password: string,
+    mcAvatarUrl?: string | null
+  ) => {
     try {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
+      const cleanName = clampString(displayName, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX);
+      const cleanAvatar = mcAvatarUrl ? clampString(mcAvatarUrl, BLUEPRINT_LIMITS.URL_MAX) : '';
       await updateProfile(cred.user, {
-        displayName: clampString(displayName, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX),
+        displayName: cleanName,
+        ...(cleanAvatar ? { photoURL: cleanAvatar } : {}),
       });
       await sendEmailVerification(cred.user);
       setAuthVersion((v) => v + 1);
@@ -1366,6 +1607,177 @@ export default function App() {
     }
   };
 
+  const handleCreateServer = async (draft: ServerDraftInput) => {
+    if (!firebaseUser || !firebaseUser.emailVerified) {
+      setAuthModalMode('signin');
+      setAuthModalOpen(true);
+      showToast('Sign in with a verified account to submit a server.');
+      return;
+    }
+
+    const serverId = `srv-${Date.now()}`;
+    const record = buildServerRecord({
+      id: serverId,
+      draft,
+      submittedBy: firebaseUser.uid,
+      submittedByName: identity.displayName || 'Member',
+      isOwner,
+    });
+
+    try {
+      await setDoc(doc(db, 'servers', serverId), {
+        ...record,
+        createdAt: serverTimestamp(),
+      });
+      showToast(
+        isOwner
+          ? `Published ${record.name} to Featured Servers.`
+          : `Submitted ${record.name} for owner approval.`
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `servers/${serverId}`);
+      throw new Error('Could not save server listing.');
+    }
+  };
+
+  const handleVoteServer = async (serverId: string) => {
+    if (!firebaseUser || !firebaseUser.emailVerified) {
+      setAuthModalMode('signin');
+      setAuthModalOpen(true);
+      showToast('Sign in with a verified account to vote for servers.');
+      return;
+    }
+    const target = cloudServers.find((s) => s.id === serverId);
+    if (!target || !target.approved) return;
+    try {
+      await updateDoc(doc(db, 'servers', serverId), {
+        votes: target.votes + 1,
+      });
+      showToast(`Voted for ${target.name}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `servers/${serverId}`);
+    }
+  };
+
+  const handleUpdateServerFlags = async (
+    serverId: string,
+    updates: { approved?: boolean; featured?: boolean }
+  ) => {
+    if (!auth.currentUser || !isOwner) {
+      throw new Error('Only owners can approve or feature servers.');
+    }
+    try {
+      await updateDoc(doc(db, 'servers', serverId), updates);
+      showToast('Server listing updated.');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `servers/${serverId}`);
+      throw new Error('Could not update server listing.');
+    }
+  };
+
+  const handleDeleteServer = async (serverId: string) => {
+    if (!auth.currentUser) return;
+    try {
+      await deleteDoc(doc(db, 'servers', serverId));
+      showToast('Server listing removed.');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `servers/${serverId}`);
+    }
+  };
+
+  const handleUpdateServerTelemetry = async (
+    srv: MinecraftServerListing,
+    updates: {
+      tps?: number;
+      mspt?: number;
+      pingMs?: number;
+      topPlayers?: string[];
+    }
+  ) => {
+    const canPersistCloud =
+      !srv.isBaselineLive &&
+      Boolean(auth.currentUser) &&
+      (isOwner || srv.submittedBy === auth.currentUser?.uid);
+
+    if (!auth.currentUser || !auth.currentUser.emailVerified) {
+      throw new Error('Sign in with a verified account to update server metrics.');
+    }
+
+    const cleanUpdates: Record<string, unknown> = {};
+    if (typeof updates.tps === 'number') cleanUpdates.tps = updates.tps;
+    if (typeof updates.mspt === 'number') cleanUpdates.mspt = updates.mspt;
+    if (typeof updates.pingMs === 'number') cleanUpdates.pingMs = updates.pingMs;
+    if (Array.isArray(updates.topPlayers)) cleanUpdates.topPlayers = updates.topPlayers;
+
+    if (canPersistCloud && Object.keys(cleanUpdates).length > 0) {
+      try {
+        await updateDoc(doc(db, 'servers', srv.id), cleanUpdates);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `servers/${srv.id}`);
+        throw new Error('Could not save server metrics to Firestore.');
+      }
+    }
+
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      const topPlayersStructured = (updates.topPlayers || []).map((line) => {
+        const idx = line.indexOf(':');
+        if (idx === -1) return { name: line.trim(), stat: '' };
+        return { name: line.slice(0, idx).trim(), stat: line.slice(idx + 1).trim() };
+      });
+      const res = await fetch('/api/mc/telemetry', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          address: srv.address,
+          tps: updates.tps,
+          mspt: updates.mspt,
+          avgPingMs: updates.pingMs,
+          topPlayers: topPlayersStructured,
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { snapshot?: ServerTelemetrySnapshot };
+        if (data.snapshot) {
+          setTelemetryMap((prev) => ({
+            ...prev,
+            [data.snapshot!.serverKey]: data.snapshot!,
+          }));
+        }
+      }
+    } catch {
+      // Telemetry endpoint update is non-blocking if Firestore succeeded
+    }
+
+    showToast(`Updated live metrics for ${srv.name}.`);
+  };
+
+  const openTool = (toolId: ToolId, mode: 'grid' | 'workbench' = 'workbench') => {
+    setActiveToolId(toolId);
+    setToolsViewMode(mode);
+    setActiveTab('tools');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const navigateTab = (tab: NavTab) => {
+    if (tab === 'tools') {
+      setToolsViewMode('grid');
+    }
+    setActiveTab(tab);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleToggleSidebar = () => {
+    if (typeof window !== 'undefined' && window.innerWidth >= 1024) {
+      setSidebarCollapsed((prev) => !prev);
+    } else {
+      setMobileDrawerOpen((prev) => !prev);
+    }
+  };
+
   const openCategoryInDirectory = (cat: CategoryId | 'all') => {
     setHeroCategory(cat);
     setActiveTab('downloads');
@@ -1373,13 +1785,14 @@ export default function App() {
   };
 
   return (
-    <div id="top" className="min-h-screen bg-[#09090b] text-zinc-100 flex flex-col">
+    <div id="top" className="min-h-screen bg-[#08080a] text-zinc-100 flex flex-col">
       <Navbar
         activeTab={activeTab}
-        onSelectTab={(tab) => {
-          setActiveTab(tab);
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }}
+        sidebarCollapsed={sidebarCollapsed}
+        mobileDrawerOpen={mobileDrawerOpen}
+        onToggleSidebar={handleToggleSidebar}
+        onCloseMobileDrawer={() => setMobileDrawerOpen(false)}
+        onSelectTab={navigateTab}
         onOpenSearch={() => setSearchOpen(true)}
         onOpenPremium={() => setPremiumOpen(true)}
         onOpenAuth={(mode = 'signin') => {
@@ -1394,33 +1807,59 @@ export default function App() {
         downloadCount={state.downloadedIds.length}
       />
 
-      <main className="flex-1">
-        {activeTab === 'home' && (
-          <>
-            <AnnouncementBanner
-              visible={!state.bannerDismissed && siteSettings.announcementVisible}
-              label={siteSettings.announcementLabel}
-              message={siteSettings.announcementText}
-              onDismiss={() => setState((prev) => ({ ...prev, bannerDismissed: true }))}
-              onSeeExclusive={() => setActiveTab('exclusive')}
-            />
+      <div className="flex flex-1 min-w-0">
+        <WorkspaceSidebar
+          activeTab={activeTab}
+          collapsed={sidebarCollapsed}
+          mobileOpen={mobileDrawerOpen}
+          onCloseMobile={() => setMobileDrawerOpen(false)}
+          onSelectTab={navigateTab}
+          onOpenSearch={() => setSearchOpen(true)}
+          onOpenPremium={() => setPremiumOpen(true)}
+          onOpenAuth={(mode = 'signin') => {
+            setAuthModalMode(mode);
+            setAuthModalOpen(true);
+          }}
+          onOpenAccount={() => setAccountModalOpen(true)}
+          identity={identity}
+          isOwner={isOwner}
+          downloadCount={state.downloadedIds.length}
+        />
 
-            <HeroSection
-              query={heroQuery}
-              selectedCategory={heroCategory}
-              selectedTier={heroTier}
-              totalResourcesCount={activeResources.length}
-              threadsCount={activeThreads.length}
-              categoryCounts={categoryCounts}
-              tierCounts={tierCounts}
-              onQueryChange={setHeroQuery}
-              onCategoryChange={handleHeroCategoryChange}
-              onTierChange={handleHeroTierChange}
-              onSearchSubmit={handleHeroSearchSubmit}
-              onSelectPopularTerm={handleSelectPopularTerm}
-              onSurpriseMe={handleSurpriseMe}
-              onBrowseEverything={() => openCategoryInDirectory('all')}
-            />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <main className="flex-1 min-w-0">
+            {activeTab === 'home' && (
+              <>
+                <AnnouncementBanner
+                  visible={!state.bannerDismissed && siteSettings.announcementVisible}
+                  label={siteSettings.announcementLabel}
+                  message={siteSettings.announcementText}
+                  onDismiss={() => setState((prev) => ({ ...prev, bannerDismissed: true }))}
+                  onSeeExclusive={() => setActiveTab('exclusive')}
+                />
+
+                <HeroSection
+                  query={heroQuery}
+                  selectedCategory={heroCategory}
+                  selectedTier={heroTier}
+                  totalResourcesCount={activeResources.length}
+                  threadsCount={activeThreads.length}
+                  listedServersCount={approvedServers.length}
+                  featuredServers={approvedServers.slice(0, 4)}
+                  liveStatusMap={liveStatusMap}
+                  categoryCounts={categoryCounts}
+                  tierCounts={tierCounts}
+                  onQueryChange={setHeroQuery}
+                  onCategoryChange={handleHeroCategoryChange}
+                  onTierChange={handleHeroTierChange}
+                  onSearchSubmit={handleHeroSearchSubmit}
+                  onSelectPopularTerm={handleSelectPopularTerm}
+                  onSurpriseMe={handleSurpriseMe}
+                  onBrowseEverything={() => openCategoryInDirectory('all')}
+                  onRefreshServer={(srv) => void checkServerLiveStatus(srv, true)}
+                  onOpenServers={() => navigateTab('servers')}
+                  onOpenMotdTool={() => openTool('motd', 'workbench')}
+                />
 
             {/* Active Search / Category Filter Results */}
             {hasActiveHomeFilter && (
@@ -1685,8 +2124,218 @@ export default function App() {
                 </div>
               )}
             </section>
+
+            {/* Minecraft Server & Developer Tools Strip */}
+            <section className="mx-auto mt-10 max-w-[1200px] px-4 sm:px-6">
+              <div className="flex items-end justify-between gap-4 border-b border-zinc-800/80 pb-3">
+                <div>
+                  <h2 className="font-display text-lg font-bold tracking-tight text-white">
+                    Server utilities &amp; calculators
+                  </h2>
+                  <p className="mt-0.5 text-xs text-zinc-400">
+                    {TOOL_DIRECTORY.length} interactive Minecraft tools: MOTD &amp; Text Font generators, Command builder, Seed map, JAR scanner, Skin viewer, and Spark analyzer.
+                  </p>
+                </div>
+
+                <div className="flex shrink-0 items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('guides');
+                      window.scrollTo({ top: 0, behavior: 'smooth' });
+                    }}
+                    className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-zinc-400 whitespace-nowrap hover:text-rose-300"
+                  >
+                    <span>Server Guides</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openTool('motd', 'grid')}
+                    className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-rose-400 whitespace-nowrap hover:text-rose-300"
+                  >
+                    <span>All {TOOL_DIRECTORY.length} tools</span>
+                    <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {TOOL_DIRECTORY.slice(0, 6).map((tool) => (
+                  <button
+                    key={tool.id}
+                    type="button"
+                    onClick={() => openTool(tool.id)}
+                    className="group rounded-lg border border-zinc-800/90 bg-[#111114] p-4 text-left transition-colors hover:border-rose-500/60"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-bold text-white group-hover:text-rose-200">
+                        {tool.title}
+                      </span>
+                      <span className="font-display-mono text-[10px] text-rose-400/90">
+                        {tool.categoryLabel}
+                      </span>
+                    </div>
+                    <p className="mt-1.5 line-clamp-2 text-xs text-zinc-400">
+                      {tool.description}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            {/* Featured Servers Strip */}
+            <section className="mx-auto mt-10 max-w-[1200px] px-4 sm:px-6">
+              <div className="flex items-end justify-between gap-4 border-b border-zinc-800/80 pb-3">
+                <div>
+                  <h2 className="text-lg font-bold tracking-tight text-white">
+                    Featured servers
+                  </h2>
+                  <p className="mt-0.5 text-xs text-zinc-400">
+                    Community-submitted and studio-verified Java, Bedrock, and Crossplay servers.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveTab('servers');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-zinc-300 whitespace-nowrap hover:text-white"
+                >
+                  <span>Server directory</span>
+                  <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </div>
+
+              {approvedServers.length === 0 ? (
+                <div className="py-5 text-xs text-zinc-500">
+                  0 servers listed yet — submit yours in the Server Directory.
+                </div>
+              ) : (
+                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  {approvedServers.slice(0, 4).map((srv) => {
+                    const live = liveStatusMap[srv.id];
+                    const telemetry = telemetryMap[srv.address.trim().toLowerCase()];
+                    const livePing =
+                      live?.online && typeof live.pingMs === 'number'
+                        ? live.pingMs
+                        : typeof telemetry?.avgPingMs === 'number'
+                        ? telemetry.avgPingMs
+                        : srv.pingMs;
+                    const liveTps =
+                      typeof telemetry?.tps === 'number' ? telemetry.tps : srv.tps;
+
+                    return (
+                      <button
+                        key={srv.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedServerId(srv.id);
+                          setActiveTab('servers');
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        className="rounded-lg border border-zinc-800/90 bg-[#111114] p-4 text-left transition-colors hover:border-zinc-600"
+                      >
+                        <div className="flex items-center justify-between gap-2 text-[11px]">
+                          <span className="inline-flex items-center gap-1.5 font-semibold text-zinc-200">
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${
+                                live?.loading
+                                  ? 'bg-amber-400 animate-pulse'
+                                  : live?.online === true
+                                  ? 'bg-emerald-400'
+                                  : live?.online === false
+                                  ? 'bg-red-400'
+                                  : 'bg-zinc-500'
+                              }`}
+                            />
+                            {live?.loading
+                              ? 'Pinging'
+                              : live?.online === true
+                              ? 'Online'
+                              : live?.online === false
+                              ? 'Offline'
+                              : srv.edition}
+                          </span>
+                          <span className="font-display-mono text-zinc-400 tabular-nums">
+                            {live?.online
+                              ? `${live.playersOnline.toLocaleString()}/${live.playersMax.toLocaleString()}`
+                              : srv.version}
+                          </span>
+                        </div>
+
+                        <div className="mt-2 flex items-center gap-2.5">
+                          {live?.iconBase64 && (
+                            <img
+                              src={live.iconBase64}
+                              alt={`${srv.name} icon`}
+                              className="h-7 w-7 shrink-0 rounded border border-zinc-800"
+                            />
+                          )}
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-bold text-white">{srv.name}</p>
+                            <p className="truncate font-display-mono text-[11px] text-zinc-400">
+                              {srv.address}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="mt-2.5 flex items-center justify-between border-t border-zinc-800/70 pt-2 font-display-mono text-[11px] text-zinc-400 tabular-nums">
+                          <span>
+                            {typeof livePing === 'number' ? `${livePing}ms ping` : srv.edition}
+                          </span>
+                          <span>
+                            {typeof liveTps === 'number' ? `${liveTps.toFixed(1)} TPS` : srv.version}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
           </>
         )}
+
+        {activeTab === 'tools' && (
+          <ToolsView
+            initialTool={activeToolId}
+            initialMode={toolsViewMode}
+            onNotify={showToast}
+          />
+        )}
+
+        {activeTab === 'servers' && (
+          <ServersView
+            servers={allDirectoryServers}
+            liveStatusMap={liveStatusMap}
+            telemetryMap={telemetryMap}
+            canPost={Boolean(firebaseUser?.emailVerified)}
+            isOwner={isOwner}
+            currentUid={firebaseUser?.uid ?? null}
+            initialSelectedServerId={selectedServerId}
+            onClearInitialSelected={() => setSelectedServerId(null)}
+            onRequireAuth={() => {
+              if (firebaseUser && !firebaseUser.emailVerified) {
+                setAccountModalOpen(true);
+              } else {
+                setAuthModalMode('signin');
+                setAuthModalOpen(true);
+              }
+            }}
+            onCheckLiveStatus={checkServerLiveStatus}
+            onRefreshAllLive={refreshAllServersLive}
+            onCreateServer={handleCreateServer}
+            onUpdateServerTelemetry={handleUpdateServerTelemetry}
+            onVoteServer={handleVoteServer}
+            onUpdateServerFlags={handleUpdateServerFlags}
+            onDeleteServer={handleDeleteServer}
+            onCopyAddress={(address) => showToast(`Copied server IP: ${address}`)}
+          />
+        )}
+
+        {activeTab === 'guides' && <GuidesView onNotify={showToast} />}
 
         {activeTab === 'downloads' && (
           <DownloadsView
@@ -1752,6 +2401,7 @@ export default function App() {
             ownerEmail={firebaseUser?.email}
             resources={activeResources}
             threads={activeThreads}
+            servers={cloudServers}
             siteSettings={siteSettings}
             onRequireSignIn={() => {
               setAuthModalMode('signin');
@@ -1767,17 +2417,18 @@ export default function App() {
             onDownloadResource={handleDownloadResource}
             onSaveSiteSettings={handleSaveSiteSettings}
             onDeleteThread={handleAdminDeleteThread}
+            onUpdateServerFlags={handleUpdateServerFlags}
+            onDeleteServer={handleDeleteServer}
           />
         )}
       </main>
 
       <Footer
-        onSelectTab={(tab) => {
-          setActiveTab(tab);
-          window.scrollTo({ top: 0, behavior: 'smooth' });
-        }}
+        onSelectTab={navigateTab}
         onOpenSponsor={() => setSponsorOpen(true)}
       />
+        </div>
+      </div>
 
       {/* Modals */}
       <ResourceModal
@@ -1806,6 +2457,7 @@ export default function App() {
         resources={activeResources}
         onClose={() => setSearchOpen(false)}
         onSelectResource={handleOpenResourceDetail}
+        onSelectTool={(id) => openTool(id, 'workbench')}
       />
 
       <PremiumModal
@@ -1893,6 +2545,18 @@ export default function App() {
           setAuthVersion((v) => v + 1);
           await persistUserMetrics({ displayName: clean });
           showToast('Display name saved.');
+        }}
+        onUpdateAvatarUrl={async (nextAvatarUrl) => {
+          if (!auth.currentUser) return;
+          const cleanAvatar = clampString(nextAvatarUrl, BLUEPRINT_LIMITS.URL_MAX);
+          await updateProfile(auth.currentUser, { photoURL: cleanAvatar });
+          setAuthVersion((v) => v + 1);
+          await persistUserMetrics({ avatarUrl: cleanAvatar });
+          showToast('Minecraft skin head avatar saved.');
+        }}
+        onOpenSkinViewer={() => {
+          setAccountModalOpen(false);
+          openTool('skin', 'workbench');
         }}
         onConnectProvider={handleConnectFromAccount}
         onDisconnectProvider={handleDisconnectProvider}

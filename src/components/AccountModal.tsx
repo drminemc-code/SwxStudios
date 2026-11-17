@@ -9,6 +9,7 @@ import {
   Shield,
   ShieldCheck,
   Unlink,
+  UserSquare2,
   X,
 } from 'lucide-react';
 import {
@@ -18,6 +19,13 @@ import {
   OAuthProviderStatus,
 } from '../types';
 import { AUTH_PROVIDERS } from '../utils/authLogic';
+import {
+  buildMinecraftHeadAvatarUrl,
+  deriveMinecraftIgnSuggestion,
+  extractMinecraftUsernameFromAvatarUrl,
+  isValidMinecraftUsername,
+} from '../utils/skinLogic';
+import { MinecraftHeadAvatar } from './MinecraftHeadAvatar';
 import { ProviderIcon } from './ProviderIcon';
 
 interface SetupNotice {
@@ -39,6 +47,8 @@ interface AccountModalProps {
   onResendVerification: () => Promise<void>;
   onRefreshVerification: () => Promise<void>;
   onUpdateDisplayName: (nextName: string) => Promise<void>;
+  onUpdateAvatarUrl?: (nextAvatarUrl: string) => Promise<void>;
+  onOpenSkinViewer?: (ign?: string) => void;
   onConnectProvider: (provider: AuthProviderId) => Promise<{
     ok: boolean;
     setupGuide?: SetupNotice;
@@ -61,12 +71,23 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   onResendVerification,
   onRefreshVerification,
   onUpdateDisplayName,
+  onUpdateAvatarUrl,
+  onOpenSkinViewer,
   onConnectProvider,
   onDisconnectProvider,
   isOwner = false,
   onOpenAdminPanel,
 }) => {
+  const existingMcIgn = extractMinecraftUsernameFromAvatarUrl(identity.avatarUrl);
   const [nameInput, setNameInput] = useState(identity.displayName);
+  const [mcIgnInput, setMcIgnInput] = useState(
+    existingMcIgn ||
+      deriveMinecraftIgnSuggestion({
+        displayName: identity.displayName,
+        email: identity.email || undefined,
+      })
+  );
+  const [headStyle, setHeadStyle] = useState<'2d' | '3d'>('2d');
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [setupNotice, setSetupNotice] = useState<SetupNotice | null>(null);
@@ -75,10 +96,17 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   useEffect(() => {
     if (open) {
       setNameInput(identity.displayName);
+      setMcIgnInput(
+        extractMinecraftUsernameFromAvatarUrl(identity.avatarUrl) ||
+          deriveMinecraftIgnSuggestion({
+            displayName: identity.displayName,
+            email: identity.email || undefined,
+          })
+      );
       setFeedback(null);
       setSetupNotice(null);
     }
-  }, [open, identity.displayName]);
+  }, [open, identity.displayName, identity.avatarUrl, identity.email]);
 
   useEffect(() => {
     if (!open) return;
@@ -178,16 +206,26 @@ export const AccountModal: React.FC<AccountModalProps> = ({
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3.5">
-            {identity.avatarUrl ? (
-              <img
-                src={identity.avatarUrl}
+            {identity.avatarUrl || existingMcIgn ? (
+              <MinecraftHeadAvatar
+                username={existingMcIgn}
+                avatarUrl={identity.avatarUrl}
+                styleMode={headStyle}
                 alt={identity.displayName}
-                className="h-12 w-12 rounded-lg border border-zinc-700 object-cover"
+                initials={identity.initials}
+                className="h-12 w-12 shrink-0 rounded-lg border border-zinc-700"
               />
             ) : (
-              <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-zinc-700 bg-zinc-900 text-sm font-bold text-white">
-                {identity.initials}
-              </div>
+              <MinecraftHeadAvatar
+                username={deriveMinecraftIgnSuggestion({
+                  displayName: identity.displayName,
+                  email: identity.email || undefined,
+                })}
+                styleMode={headStyle}
+                alt={identity.displayName}
+                initials={identity.initials}
+                className="h-12 w-12 shrink-0 rounded-lg border border-zinc-700"
+              />
             )}
             <div className="min-w-0">
               <h2 id="account-modal-title" className="truncate text-base font-bold text-white">
@@ -321,6 +359,133 @@ export const AccountModal: React.FC<AccountModalProps> = ({
             </button>
           </form>
         )}
+
+        {/* Minecraft Skin Head Face Avatar Editor */}
+        <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/90 p-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <UserSquare2 className="h-4 w-4 text-rose-400" aria-hidden="true" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-200">
+                Minecraft Skin Head Avatar
+              </h3>
+            </div>
+            <div className="inline-flex rounded border border-zinc-800 bg-[#0b0b0e] p-0.5 text-[10px]">
+              <button
+                type="button"
+                onClick={() => setHeadStyle('2d')}
+                className={`rounded px-2 py-0.5 font-semibold ${
+                  headStyle === '2d'
+                    ? 'bg-rose-600 text-white'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                2D Head
+              </button>
+              <button
+                type="button"
+                onClick={() => setHeadStyle('3d')}
+                className={`rounded px-2 py-0.5 font-semibold ${
+                  headStyle === '3d'
+                    ? 'bg-rose-600 text-white'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                3D Bust
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <MinecraftHeadAvatar
+              username={mcIgnInput || 'Steve'}
+              styleMode={headStyle}
+              alt={`${mcIgnInput || 'Steve'} skin head preview`}
+              className="h-14 w-14 shrink-0 rounded-lg border border-zinc-700 bg-[#0b0b0e]"
+            />
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  maxLength={16}
+                  value={mcIgnInput}
+                  onChange={(e) => setMcIgnInput(e.target.value)}
+                  placeholder="Enter Minecraft IGN (e.g. Notch)"
+                  aria-label="Minecraft Java username for profile avatar"
+                  className="h-9 min-w-0 flex-1 rounded-md border border-zinc-800 bg-[#0b0b0e] px-3 font-display-mono text-xs text-zinc-100 focus:border-rose-500/60 focus:outline-none"
+                />
+                {identity.isFirebaseUser && onUpdateAvatarUrl && (
+                  <button
+                    type="button"
+                    disabled={busyAction !== null}
+                    onClick={async () => {
+                      const clean = mcIgnInput.trim();
+                      if (!isValidMinecraftUsername(clean)) {
+                        setFeedback({
+                          type: 'err',
+                          text: 'Minecraft IGN must be 1–16 letters, numbers, or underscores.',
+                        });
+                        return;
+                      }
+                      setBusyAction('save-avatar');
+                      setFeedback(null);
+                      try {
+                        const origin =
+                          typeof window !== 'undefined' ? window.location.origin : '';
+                        const avatarUrl = buildMinecraftHeadAvatarUrl(clean, {
+                          size: 128,
+                          style: headStyle,
+                          origin,
+                        });
+                        await onUpdateAvatarUrl(avatarUrl);
+                        setFeedback({
+                          type: 'ok',
+                          text: `Updated profile avatar to ${clean}'s Minecraft skin head.`,
+                        });
+                      } catch (err) {
+                        setFeedback({
+                          type: 'err',
+                          text:
+                            err instanceof Error
+                              ? err.message
+                              : 'Could not save Minecraft skin head.',
+                        });
+                      } finally {
+                        setBusyAction(null);
+                      }
+                    }}
+                    className="h-9 shrink-0 rounded-md bg-rose-600 px-3 text-xs font-bold text-white hover:bg-rose-500 disabled:opacity-60"
+                  >
+                    {busyAction === 'save-avatar' ? 'Saving...' : 'Apply Head'}
+                  </button>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[10px]">
+                <div className="flex items-center gap-1">
+                  {['Notch', 'Dream', 'Technoblade', 'Steve'].map((sample) => (
+                    <button
+                      key={sample}
+                      type="button"
+                      onClick={() => setMcIgnInput(sample)}
+                      className="rounded border border-zinc-800 bg-[#0b0b0e] px-2 py-0.5 font-display-mono text-zinc-400 hover:border-rose-500/50 hover:text-white"
+                    >
+                      {sample}
+                    </button>
+                  ))}
+                </div>
+                {onOpenSkinViewer && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenSkinViewer(mcIgnInput.trim() || 'Notch')}
+                    className="font-semibold text-rose-400 hover:text-rose-300"
+                  >
+                    Open in 2D / 3D Skin Viewer &rarr;
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
 
         {/* Feedback Banner */}
         {feedback && (

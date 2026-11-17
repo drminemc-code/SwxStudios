@@ -12,8 +12,10 @@ import {
   Pencil,
   Plus,
   Search,
+  Server,
   ShieldCheck,
   Sliders,
+  Star,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -22,6 +24,7 @@ import {
   ArtworkTheme,
   CategoryId,
   CommunityThread,
+  MinecraftServerListing,
   ResourceItem,
   ResourceTier,
   SiteSettings,
@@ -52,6 +55,7 @@ interface AdminPanelViewProps {
   ownerEmail?: string | null;
   resources: ResourceItem[];
   threads: CommunityThread[];
+  servers: MinecraftServerListing[];
   siteSettings: SiteSettings;
   onRequireSignIn: () => void;
   onReturnHome: () => void;
@@ -66,6 +70,11 @@ interface AdminPanelViewProps {
   onDownloadResource: (resource: ResourceItem) => void;
   onSaveSiteSettings: (settings: SiteSettings) => Promise<void>;
   onDeleteThread: (threadId: string) => Promise<void>;
+  onUpdateServerFlags: (
+    serverId: string,
+    updates: { approved?: boolean; featured?: boolean }
+  ) => Promise<void>;
+  onDeleteServer: (serverId: string) => Promise<void>;
 }
 
 function createEmptyDraft(authorName: string): ResourceDraftInput {
@@ -110,6 +119,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   ownerEmail,
   resources,
   threads,
+  servers,
   siteSettings,
   onRequireSignIn,
   onReturnHome,
@@ -119,6 +129,8 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   onDownloadResource,
   onSaveSiteSettings,
   onDeleteThread,
+  onUpdateServerFlags,
+  onDeleteServer,
 }) => {
   const [workspaceTab, setWorkspaceTab] = useState<AdminWorkspaceTab>('upload');
   const [draft, setDraft] = useState<ResourceDraftInput>(() =>
@@ -1543,6 +1555,77 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-zinc-800/90 bg-[#111114] p-5 space-y-3">
+              <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
+                <div className="flex items-center gap-2">
+                  <Server className="h-4 w-4 text-emerald-400" aria-hidden="true" />
+                  <h2 className="text-sm font-bold text-white">Server Directory Queue</h2>
+                </div>
+                <span className="text-xs text-zinc-400 tabular-nums">
+                  {servers.filter((s) => !s.approved).length} pending
+                </span>
+              </div>
+
+              {servers.length === 0 ? (
+                <p className="py-4 text-center text-xs text-zinc-500">
+                  No Minecraft servers submitted yet.
+                </p>
+              ) : (
+                <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {servers.map((srv) => (
+                    <div
+                      key={srv.id}
+                      className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate font-semibold text-zinc-100">{srv.name}</span>
+                        <span
+                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                            srv.approved
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : 'bg-amber-500/20 text-amber-300'
+                          }`}
+                        >
+                          {srv.approved ? 'Approved' : 'Pending'}
+                        </span>
+                      </div>
+                      <p className="mt-1 truncate font-display-mono text-[11px] text-zinc-500">
+                        {srv.address} · {srv.edition}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void onUpdateServerFlags(srv.id, { approved: !srv.approved })
+                          }
+                          className="rounded border border-zinc-800 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600"
+                        >
+                          {srv.approved ? 'Unapprove' : 'Approve'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void onUpdateServerFlags(srv.id, { featured: !srv.featured })
+                          }
+                          className="inline-flex items-center gap-1 rounded border border-zinc-800 px-2 py-0.5 text-[11px] text-zinc-200 hover:border-zinc-600"
+                        >
+                          <Star className="h-3 w-3 text-amber-300" />
+                          <span>{srv.featured ? 'Unfeature' : 'Feature'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onDeleteServer(srv.id)}
+                          className="rounded border border-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400 hover:border-red-500/40 hover:text-red-300"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

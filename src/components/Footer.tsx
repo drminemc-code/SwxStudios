@@ -8,7 +8,7 @@ interface FooterProps {
 
 export const Footer: React.FC<FooterProps> = ({ onSelectTab, onOpenSponsor }) => {
   return (
-    <footer className="mt-16 border-t border-zinc-800/80 bg-[#09090b]">
+    <footer className="mt-16 border-t border-zinc-800/80 bg-[#08080a]">
       <div className="mx-auto flex max-w-[1200px] flex-col gap-6 px-4 py-8 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         <div>
           <div className="flex items-center gap-2.5">
@@ -27,19 +27,28 @@ export const Footer: React.FC<FooterProps> = ({ onSelectTab, onOpenSponsor }) =>
         </div>
 
         <nav aria-label="Footer navigation" className="flex flex-wrap items-center gap-5 text-xs text-zinc-400">
-          <button type="button" onClick={() => onSelectTab('home')} className="hover:text-white">
+          <button type="button" onClick={() => onSelectTab('home')} className="hover:text-rose-300">
             Home
           </button>
-          <button type="button" onClick={() => onSelectTab('downloads')} className="hover:text-white">
+          <button type="button" onClick={() => onSelectTab('tools')} className="hover:text-rose-300">
+            Tools
+          </button>
+          <button type="button" onClick={() => onSelectTab('servers')} className="hover:text-rose-300">
+            Servers
+          </button>
+          <button type="button" onClick={() => onSelectTab('guides')} className="hover:text-rose-300">
+            Guides
+          </button>
+          <button type="button" onClick={() => onSelectTab('downloads')} className="hover:text-rose-300">
             Downloads
           </button>
-          <button type="button" onClick={() => onSelectTab('exclusive')} className="hover:text-white">
+          <button type="button" onClick={() => onSelectTab('exclusive')} className="hover:text-rose-300">
             Exclusive
           </button>
-          <button type="button" onClick={() => onSelectTab('community')} className="hover:text-white">
+          <button type="button" onClick={() => onSelectTab('community')} className="hover:text-rose-300">
             Community
           </button>
-          <button type="button" onClick={onOpenSponsor} className="hover:text-white">
+          <button type="button" onClick={onOpenSponsor} className="hover:text-rose-300">
             Advertise
           </button>
         </nav>

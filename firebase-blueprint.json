@@ -404,12 +404,121 @@
         "communityEnabled": {
           "type": "boolean"
         },
+        "heroHeadline": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time"
         }
       },
       "required": ["announcementVisible", "announcementLabel", "announcementText", "communityEnabled", "updatedAt"]
+    },
+    "ServerListing": {
+      "title": "ServerListing",
+      "description": "Community and owner-approved Minecraft server directory listing.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "address": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "edition": {
+          "type": "string",
+          "enum": ["Java", "Bedrock", "Crossplay"]
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "motd": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1500
+        },
+        "bedrockAddress": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "tps": {
+          "type": "number"
+        },
+        "mspt": {
+          "type": "number"
+        },
+        "pingMs": {
+          "type": "number"
+        },
+        "topPlayers": {
+          "type": "array"
+        },
+        "gameModes": {
+          "type": "array"
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "featured": {
+          "type": "boolean"
+        },
+        "votes": {
+          "type": "number"
+        },
+        "submittedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "submittedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "address",
+        "edition",
+        "version",
+        "motd",
+        "gameModes",
+        "approved",
+        "featured",
+        "votes",
+        "submittedBy",
+        "submittedByName",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -440,6 +549,10 @@
     "/settings/{settingId}": {
       "schema": { "$ref": "#/entities/SiteSettings" },
       "description": "Owner-configured global site settings document (site)."
+    },
+    "/servers/{serverId}": {
+      "schema": { "$ref": "#/entities/ServerListing" },
+      "description": "Community-submitted and owner-approved Minecraft server listings."
     }
   }
 }

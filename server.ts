@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import crypto from 'crypto';
+import dns from 'dns';
 import fs from 'fs';
+import net from 'net';
 import path from 'path';
 import express, { type Request, type Response } from 'express';
 
@@ -39,6 +41,342 @@ const OWNER_EMAILS = new Set(['randellemupas@gmail.com', 'drminemc@gmail.com']);
 const ALLOWED_ARCHIVE_EXTENSIONS = new Set(['jar', 'zip', 'rar', '7z', 'gz', 'tar']);
 const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const TELEMETRY_FILE = path.join(UPLOADS_DIR, 'server-telemetry.json');
+
+interface ServerTelemetryRecord {
+  serverKey: string;
+  address: string;
+  tps: number | null;
+  mspt: number | null;
+  avgPingMs: number | null;
+  playersOnline: number | null;
+  playersMax: number | null;
+  topPlayers: Array<{ name: string; stat: string }>;
+  source: string;
+  updatedAt: string;
+}
+
+const telemetryStore = new Map<string, ServerTelemetryRecord>();
+try {
+  if (fs.existsSync(TELEMETRY_FILE)) {
+    const parsed = JSON.parse(fs.readFileSync(TELEMETRY_FILE, 'utf8')) as ServerTelemetryRecord[];
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (item?.serverKey) {
+          telemetryStore.set(item.serverKey.toLowerCase(), item);
+        }
+      }
+    }
+  }
+} catch {
+  // Start with empty telemetry store if file is unreadable
+}
+
+function saveTelemetryStore(): void {
+  try {
+    fs.writeFileSync(
+      TELEMETRY_FILE,
+      JSON.stringify(Array.from(telemetryStore.values()), null, 2),
+      'utf8'
+    );
+  } catch {
+    // Non-fatal persistence error
+  }
+}
+
+interface SlpPlayerSample {
+  uuid: string;
+  name: string;
+}
+
+interface UnifiedMcStatusPayload {
+  online: boolean;
+  host: string;
+  resolvedHost: string | null;
+  ip: string | null;
+  port: number;
+  edition: 'java' | 'bedrock';
+  version: string | null;
+  software: string | null;
+  pingMs: number | null;
+  playersOnline: number;
+  playersMax: number;
+  playerSample: SlpPlayerSample[];
+  motdLines: string[];
+  iconBase64: string | null;
+  checkedAt: string;
+}
+
+const mcStatusCache = new Map<string, { expiresAt: number; payload: UnifiedMcStatusPayload }>();
+
+const MC_NAMED_COLORS: Record<string, string> = {
+  black: '§0',
+  dark_blue: '§1',
+  dark_green: '§2',
+  dark_aqua: '§3',
+  dark_red: '§4',
+  dark_purple: '§5',
+  gold: '§6',
+  gray: '§7',
+  dark_gray: '§8',
+  blue: '§9',
+  green: '§a',
+  aqua: '§b',
+  red: '§c',
+  light_purple: '§d',
+  yellow: '§e',
+  white: '§f',
+  reset: '§r',
+};
+
+function flattenChatComponent(node: unknown): string {
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(flattenChatComponent).join('');
+  if (!node || typeof node !== 'object') return '';
+
+  const obj = node as Record<string, unknown>;
+  let prefix = '';
+  if (typeof obj.color === 'string') {
+    if (MC_NAMED_COLORS[obj.color]) {
+      prefix += MC_NAMED_COLORS[obj.color];
+    } else if (/^#[0-9a-fA-F]{6}$/.test(obj.color)) {
+      prefix += `&#${obj.color.slice(1)}`;
+    }
+  }
+  if (obj.bold) prefix += '§l';
+  if (obj.italic) prefix += '§o';
+  if (obj.underlined) prefix += '§n';
+  if (obj.strikethrough) prefix += '§m';
+
+  let out = prefix + (typeof obj.text === 'string' ? obj.text : '');
+  if (Array.isArray(obj.extra)) {
+    out += obj.extra.map(flattenChatComponent).join('');
+  }
+  return out;
+}
+
+function writeVarInt(val: number): Buffer {
+  let v = val >>> 0;
+  const bytes: number[] = [];
+  do {
+    let temp = v & 0x7f;
+    v >>>= 7;
+    if (v !== 0) temp |= 0x80;
+    bytes.push(temp);
+  } while (v !== 0);
+  return Buffer.from(bytes);
+}
+
+function readVarInt(buf: Buffer, offset: number): { val: number; next: number } | null {
+  let num = 0;
+  let shift = 0;
+  let pos = offset;
+  while (pos < buf.length) {
+    const byte = buf[pos++];
+    num |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) return { val: num, next: pos };
+    shift += 7;
+    if (shift > 35) return null;
+  }
+  return null;
+}
+
+function inferSoftwareFromVersion(versionText: string | null): string | null {
+  if (!versionText) return null;
+  const known = ['Paper', 'Purpur', 'Folia', 'Canvas', 'Pufferfish', 'Spigot', 'Bukkit', 'Velocity', 'Waterfall', 'BungeeCord', 'Fabric', 'Forge', 'NeoForge', 'Leaf'];
+  const lower = versionText.toLowerCase();
+  for (const sw of known) {
+    if (lower.includes(sw.toLowerCase())) return sw;
+  }
+  return null;
+}
+
+async function directJavaSlpPing(rawHost: string): Promise<{
+  online: boolean;
+  resolvedHost: string;
+  port: number;
+  ip: string | null;
+  pingMs: number;
+  version: string | null;
+  software: string | null;
+  playersOnline: number;
+  playersMax: number;
+  playerSample: SlpPlayerSample[];
+  motdLines: string[];
+  iconBase64: string | null;
+} | null> {
+  const colonIdx = rawHost.lastIndexOf(':');
+  let targetHost = colonIdx > 0 ? rawHost.slice(0, colonIdx) : rawHost;
+  let targetPort = colonIdx > 0 ? Number(rawHost.slice(colonIdx + 1)) || 25565 : 25565;
+
+  if (colonIdx === -1) {
+    try {
+      const srvRecords = await dns.promises.resolveSrv(`_minecraft._tcp.${targetHost}`);
+      if (srvRecords && srvRecords.length > 0) {
+        srvRecords.sort((a, b) => a.priority - b.priority);
+        targetHost = srvRecords[0].name.replace(/\.$/, '');
+        targetPort = srvRecords[0].port || 25565;
+      }
+    } catch {
+      // No SRV record; proceed directly to A/AAAA lookup
+    }
+  }
+
+  let resolvedIp: string | null = null;
+  try {
+    const lookup = await dns.promises.lookup(targetHost);
+    resolvedIp = lookup.address;
+  } catch {
+    // Let socket handle resolution error
+  }
+
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: targetHost, port: targetPort, timeout: 4200 });
+    let finished = false;
+    const done = (result: Awaited<ReturnType<typeof directJavaSlpPing>>) => {
+      if (finished) return;
+      finished = true;
+      socket.destroy();
+      resolve(result);
+    };
+
+    let pingSentAt = 0;
+    let tcpPingMs = 0;
+    let parsedJson: {
+      version?: { name?: string };
+      players?: {
+        online?: number;
+        max?: number;
+        sample?: Array<{ id?: string; name?: string }>;
+      };
+      description?: unknown;
+      favicon?: string;
+    } | null = null;
+
+    let buf = Buffer.alloc(0);
+    const connectStartedAt = performance.now();
+
+    socket.on('connect', () => {
+      tcpPingMs = Math.max(1, Math.round(performance.now() - connectStartedAt));
+      const hostBuf = Buffer.from(targetHost, 'utf8');
+      const handshakeBody = Buffer.concat([
+        writeVarInt(0x00),
+        writeVarInt(767),
+        writeVarInt(hostBuf.length),
+        hostBuf,
+        Buffer.from([(targetPort >> 8) & 0xff, targetPort & 0xff]),
+        writeVarInt(1),
+      ]);
+      const handshakePacket = Buffer.concat([writeVarInt(handshakeBody.length), handshakeBody]);
+      const statusRequest = Buffer.from([0x01, 0x00]);
+      socket.write(Buffer.concat([handshakePacket, statusRequest]));
+    });
+
+    socket.on('data', (chunk) => {
+      buf = Buffer.concat([buf, chunk]);
+      while (buf.length > 0) {
+        const pktLen = readVarInt(buf, 0);
+        if (!pktLen || buf.length < pktLen.next + pktLen.val) break;
+
+        const packet = buf.subarray(pktLen.next, pktLen.next + pktLen.val);
+        buf = buf.subarray(pktLen.next + pktLen.val);
+
+        const pktId = readVarInt(packet, 0);
+        if (!pktId) continue;
+
+        if (pktId.val === 0x00 && !parsedJson) {
+          const strLen = readVarInt(packet, pktId.next);
+          if (!strLen || packet.length < strLen.next + strLen.val) continue;
+          const jsonText = packet.subarray(strLen.next, strLen.next + strLen.val).toString('utf8');
+          try {
+            parsedJson = JSON.parse(jsonText);
+          } catch {
+            done(null);
+            return;
+          }
+
+          // Measure exact SLP Ping-Pong round-trip latency
+          const pingPayload = Buffer.alloc(10);
+          pingPayload[0] = 0x09;
+          pingPayload[1] = 0x01;
+          pingPayload.writeBigInt64BE(BigInt(Date.now()), 2);
+          pingSentAt = performance.now();
+          socket.write(pingPayload);
+        } else if (pktId.val === 0x01 && parsedJson) {
+          const rttMs = Math.max(1, Math.round(performance.now() - pingSentAt));
+          const motdFull = flattenChatComponent(parsedJson.description);
+          const motdLines = motdFull
+            .split('\n')
+            .map((l) => l.trimEnd())
+            .filter(Boolean);
+          const versionName = parsedJson.version?.name ? String(parsedJson.version.name) : null;
+          const sample = Array.isArray(parsedJson.players?.sample)
+            ? parsedJson.players!.sample
+                .filter((p) => p && typeof p.name === 'string' && p.name.trim())
+                .map((p) => ({
+                  uuid: String(p.id || ''),
+                  name: String(p.name).replace(/§./g, '').trim(),
+                }))
+                .filter((p) => p.name.length > 0)
+            : [];
+
+          done({
+            online: true,
+            resolvedHost: targetHost,
+            port: targetPort,
+            ip: resolvedIp,
+            pingMs: rttMs || tcpPingMs,
+            version: versionName,
+            software: inferSoftwareFromVersion(versionName),
+            playersOnline: typeof parsedJson.players?.online === 'number' ? parsedJson.players.online : 0,
+            playersMax: typeof parsedJson.players?.max === 'number' ? parsedJson.players.max : 0,
+            playerSample: sample,
+            motdLines,
+            iconBase64: typeof parsedJson.favicon === 'string' ? parsedJson.favicon : null,
+          });
+          return;
+        }
+      }
+    });
+
+    const finalizePartial = () => {
+      if (parsedJson) {
+        const motdFull = flattenChatComponent(parsedJson.description);
+        const versionName = parsedJson.version?.name ? String(parsedJson.version.name) : null;
+        const sample = Array.isArray(parsedJson.players?.sample)
+          ? parsedJson.players!.sample
+              .filter((p) => p && typeof p.name === 'string' && p.name.trim())
+              .map((p) => ({
+                uuid: String(p.id || ''),
+                name: String(p.name).replace(/§./g, '').trim(),
+              }))
+              .filter((p) => p.name.length > 0)
+          : [];
+        done({
+          online: true,
+          resolvedHost: targetHost,
+          port: targetPort,
+          ip: resolvedIp,
+          pingMs: tcpPingMs || 1,
+          version: versionName,
+          software: inferSoftwareFromVersion(versionName),
+          playersOnline: typeof parsedJson.players?.online === 'number' ? parsedJson.players.online : 0,
+          playersMax: typeof parsedJson.players?.max === 'number' ? parsedJson.players.max : 0,
+          playerSample: sample,
+          motdLines: motdFull ? motdFull.split('\n').filter(Boolean) : [],
+          iconBase64: typeof parsedJson.favicon === 'string' ? parsedJson.favicon : null,
+        });
+      } else {
+        done(null);
+      }
+    };
+
+    socket.once('end', finalizePartial);
+    socket.once('timeout', finalizePartial);
+    socket.once('error', () => done(null));
+  });
+}
 
 let FIREBASE_API_KEY = '';
 try {
@@ -64,6 +402,51 @@ function extractArchiveExtensionServer(fileName: string): string | null {
   if (dotIdx <= 0 || dotIdx === lower.length - 1) return null;
   const ext = lower.slice(dotIdx + 1);
   return ALLOWED_ARCHIVE_EXTENSIONS.has(ext) ? ext : null;
+}
+
+async function verifyVerifiedUserToken(
+  req: Request
+): Promise<{ ok: boolean; status: number; error?: string; uid?: string; email?: string; isOwner?: boolean }> {
+  const authHeader = req.headers.authorization || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) {
+    return { ok: false, status: 401, error: 'Missing Authorization Bearer token.' };
+  }
+  if (!FIREBASE_API_KEY) {
+    return { ok: false, status: 500, error: 'Firebase API key is not configured.' };
+  }
+
+  try {
+    const verifyRes = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(FIREBASE_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: match[1] }),
+      }
+    );
+    const data = (await verifyRes.json()) as {
+      users?: Array<{ localId?: string; email?: string; emailVerified?: boolean }>;
+      error?: { message?: string };
+    };
+    const user = data.users?.[0];
+    if (!verifyRes.ok || !user) {
+      return { ok: false, status: 401, error: data.error?.message || 'Invalid session token.' };
+    }
+    if (!user.emailVerified) {
+      return { ok: false, status: 403, error: 'Verified email required.' };
+    }
+    const emailLower = (user.email || '').trim().toLowerCase();
+    return {
+      ok: true,
+      status: 200,
+      uid: user.localId,
+      email: emailLower,
+      isOwner: OWNER_EMAILS.has(emailLower),
+    };
+  } catch {
+    return { ok: false, status: 502, error: 'Could not verify Firebase session.' };
+  }
 }
 
 async function verifyOwnerToken(
@@ -779,6 +1162,540 @@ async function createApp() {
       fs.unlinkSync(filePath);
     }
     res.json({ ok: true });
+  });
+
+  // 10. Real Minecraft Server Status lookup (Direct Java SLP TCP + mcstatus.io / mcsrvstat.us fallback)
+  app.get('/api/mc/status', async (req: Request, res: Response) => {
+    const rawHost = typeof req.query.host === 'string' ? req.query.host.trim() : '';
+    const edition: 'java' | 'bedrock' = req.query.edition === 'bedrock' ? 'bedrock' : 'java';
+    const bypassCache = req.query.fresh === '1';
+
+    if (!rawHost || !/^[a-zA-Z0-9.-]+(:\d{1,5})?$/.test(rawHost) || rawHost.length > 120) {
+      res.status(400).json({ error: 'Enter a valid server hostname or IP:port (e.g. play.hypixel.net).' });
+      return;
+    }
+
+    const cacheKey = `${edition}:${rawHost.toLowerCase()}`;
+    const cached = mcStatusCache.get(cacheKey);
+    if (!bypassCache && cached && cached.expiresAt > Date.now()) {
+      res.json(cached.payload);
+      return;
+    }
+
+    try {
+      let payload: UnifiedMcStatusPayload | null = null;
+
+      if (edition === 'java') {
+        const slp = await directJavaSlpPing(rawHost);
+        if (slp && slp.online) {
+          payload = {
+            online: true,
+            host: rawHost,
+            resolvedHost: slp.resolvedHost,
+            ip: slp.ip,
+            port: slp.port,
+            edition: 'java',
+            version: slp.version,
+            software: slp.software,
+            pingMs: slp.pingMs,
+            playersOnline: slp.playersOnline,
+            playersMax: slp.playersMax,
+            playerSample: slp.playerSample,
+            motdLines: slp.motdLines,
+            iconBase64: slp.iconBase64,
+            checkedAt: new Date().toISOString(),
+          };
+        }
+      }
+
+      if (!payload) {
+        const t0 = performance.now();
+        const mcstatusUrl =
+          edition === 'bedrock'
+            ? `https://api.mcstatus.io/v2/status/bedrock/${encodeURIComponent(rawHost)}`
+            : `https://api.mcstatus.io/v2/status/java/${encodeURIComponent(rawHost)}`;
+        const mcsrvUrl =
+          edition === 'bedrock'
+            ? `https://api.mcsrvstat.us/bedrock/3/${encodeURIComponent(rawHost)}`
+            : `https://api.mcsrvstat.us/3/${encodeURIComponent(rawHost)}`;
+
+        const [mcRes, srvRes] = await Promise.allSettled([
+          fetch(mcstatusUrl, {
+            headers: { 'User-Agent': 'SwxStudios/1.0' },
+            signal: AbortSignal.timeout(6500),
+          }),
+          fetch(mcsrvUrl, {
+            headers: { 'User-Agent': 'SwxStudios/1.0' },
+            signal: AbortSignal.timeout(6500),
+          }),
+        ]);
+
+        const fallbackLatency = Math.max(12, Math.round(performance.now() - t0));
+
+        if (mcRes.status === 'fulfilled' && mcRes.value.ok) {
+          const d = (await mcRes.value.json()) as {
+            online?: boolean;
+            host?: string;
+            port?: number;
+            ip_address?: string;
+            srv_record?: { host?: string; port?: number } | null;
+            version?: { name_clean?: string; name_raw?: string };
+            software?: string;
+            icon?: string;
+            players?: {
+              online?: number;
+              max?: number;
+              list?: Array<{ uuid?: string; name_clean?: string; name_raw?: string }>;
+            };
+            motd?: { raw?: string; clean?: string };
+          };
+
+          const versionStr = d.version?.name_clean || d.version?.name_raw || null;
+          const playerSample: SlpPlayerSample[] = Array.isArray(d.players?.list)
+            ? d.players!.list
+                .map((p) => ({
+                  uuid: String(p.uuid || ''),
+                  name: String(p.name_clean || p.name_raw || '').trim(),
+                }))
+                .filter((p) => p.name.length > 0)
+            : [];
+
+          const motdText = d.motd?.raw || d.motd?.clean || '';
+          payload = {
+            online: Boolean(d.online),
+            host: d.host || rawHost,
+            resolvedHost: d.srv_record?.host || d.host || null,
+            ip: d.ip_address || null,
+            port: d.srv_record?.port || d.port || (edition === 'bedrock' ? 19132 : 25565),
+            edition,
+            version: versionStr,
+            software: d.software || inferSoftwareFromVersion(versionStr),
+            pingMs: d.online ? fallbackLatency : null,
+            playersOnline: typeof d.players?.online === 'number' ? d.players.online : 0,
+            playersMax: typeof d.players?.max === 'number' ? d.players.max : 0,
+            playerSample,
+            motdLines: motdText ? motdText.split('\n').filter(Boolean) : [],
+            iconBase64: typeof d.icon === 'string' ? d.icon : null,
+            checkedAt: new Date().toISOString(),
+          };
+        } else if (srvRes.status === 'fulfilled' && srvRes.value.ok) {
+          const data = (await srvRes.value.json()) as {
+            online?: boolean;
+            hostname?: string;
+            ip?: string;
+            port?: number;
+            version?: string;
+            software?: string;
+            icon?: string;
+            players?: {
+              online?: number;
+              max?: number;
+              list?: Array<{ name?: string; uuid?: string } | string>;
+            };
+            motd?: { raw?: string[]; clean?: string[] };
+          };
+
+          const playerSample: SlpPlayerSample[] = Array.isArray(data.players?.list)
+            ? data.players!.list
+                .map((item) =>
+                  typeof item === 'string'
+                    ? { uuid: '', name: item }
+                    : { uuid: String(item.uuid || ''), name: String(item.name || '') }
+                )
+                .filter((p) => p.name.trim().length > 0)
+            : [];
+
+          payload = {
+            online: Boolean(data.online),
+            host: data.hostname || rawHost,
+            resolvedHost: data.hostname || null,
+            ip: data.ip || null,
+            port: data.port || (edition === 'bedrock' ? 19132 : 25565),
+            edition,
+            version: data.version || null,
+            software: data.software || inferSoftwareFromVersion(data.version || null),
+            pingMs: data.online ? fallbackLatency : null,
+            playersOnline: typeof data.players?.online === 'number' ? data.players.online : 0,
+            playersMax: typeof data.players?.max === 'number' ? data.players.max : 0,
+            playerSample,
+            motdLines: Array.isArray(data.motd?.raw)
+              ? data.motd.raw
+              : Array.isArray(data.motd?.clean)
+              ? data.motd.clean
+              : [],
+            iconBase64: typeof data.icon === 'string' ? data.icon : null,
+            checkedAt: new Date().toISOString(),
+          };
+        }
+      }
+
+      if (!payload) {
+        res.status(502).json({ error: 'Unable to reach Minecraft status providers.' });
+        return;
+      }
+
+      mcStatusCache.set(cacheKey, {
+        expiresAt: Date.now() + 12_000,
+        payload,
+      });
+
+      res.json(payload);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to query Minecraft server status.';
+      res.status(502).json({ error: message });
+    }
+  });
+
+  // 10b. Live Server Plugin Telemetry (TPS, MSPT, Ping, Players, Top Players)
+  app.get('/api/mc/telemetry', (_req: Request, res: Response) => {
+    const items = Array.from(telemetryStore.values());
+    res.json({ items });
+  });
+
+  app.get('/api/mc/telemetry/:serverKey', (req: Request, res: Response) => {
+    const key = String(req.params.serverKey || '').trim().toLowerCase();
+    const record = telemetryStore.get(key) || null;
+    res.json({ telemetry: record });
+  });
+
+  app.post('/api/mc/telemetry', async (req: Request, res: Response) => {
+    const body = (req.body || {}) as {
+      serverKey?: string;
+      address?: string;
+      tps?: number | null;
+      mspt?: number | null;
+      avgPingMs?: number | null;
+      playersOnline?: number | null;
+      playersMax?: number | null;
+      topPlayers?: Array<{ name?: string; stat?: string }>;
+      source?: string;
+      pluginSecret?: string;
+    };
+
+    const expectedBridgeSecret = process.env.MC_TELEMETRY_SECRET?.trim();
+    const hasBridgeSecret =
+      Boolean(expectedBridgeSecret) && body.pluginSecret === expectedBridgeSecret;
+    if (!hasBridgeSecret) {
+      const authCheck = await verifyVerifiedUserToken(req);
+      if (!authCheck.ok) {
+        res.status(authCheck.status).json({ error: authCheck.error });
+        return;
+      }
+    }
+
+    const rawKey = (body.serverKey || body.address || '').trim().toLowerCase();
+    if (!rawKey || rawKey.length > 120) {
+      res.status(400).json({ error: 'Valid serverKey or address is required.' });
+      return;
+    }
+
+    const numOrNull = (val: unknown, min: number, max: number): number | null => {
+      if (typeof val !== 'number' || !Number.isFinite(val)) return null;
+      return Math.round(Math.max(min, Math.min(max, val)) * 100) / 100;
+    };
+
+    const topPlayers = Array.isArray(body.topPlayers)
+      ? body.topPlayers
+          .slice(0, 15)
+          .map((p) => ({
+            name: String(p?.name || '').trim().slice(0, 24),
+            stat: String(p?.stat || '').trim().slice(0, 40),
+          }))
+          .filter((p) => p.name.length > 0)
+      : [];
+
+    const record: ServerTelemetryRecord = {
+      serverKey: rawKey,
+      address: String(body.address || rawKey).trim().slice(0, 120),
+      tps: numOrNull(body.tps, 0, 25),
+      mspt: numOrNull(body.mspt, 0, 5000),
+      avgPingMs: numOrNull(body.avgPingMs, 0, 10000),
+      playersOnline: numOrNull(body.playersOnline, 0, 500000),
+      playersMax: numOrNull(body.playersMax, 0, 500000),
+      topPlayers,
+      source: String(body.source || 'SwxStudios Heartbeat').slice(0, 60),
+      updatedAt: new Date().toISOString(),
+    };
+
+    telemetryStore.set(rawKey, record);
+    if (record.address && record.address.toLowerCase() !== rawKey) {
+      telemetryStore.set(record.address.toLowerCase(), record);
+    }
+    saveTelemetryStore();
+    res.json({ ok: true, telemetry: record });
+  });
+
+  // 11. Real Mojang UUID, Skin Texture & Head Avatar Proxy Routes
+  const mcProfileCache = new Map<
+    string,
+    {
+      expiresAt: number;
+      profile: {
+        name: string;
+        rawUuid: string;
+        dashedUuid: string;
+        skinUrl: string | null;
+        slim: boolean;
+      };
+    }
+  >();
+
+  const resolveMojangSessionProfile = async (
+    username: string
+  ): Promise<{
+    name: string;
+    rawUuid: string;
+    dashedUuid: string;
+    skinUrl: string | null;
+    slim: boolean;
+  } | null> => {
+    const cacheKey = username.toLowerCase();
+    const cached = mcProfileCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.profile;
+    }
+
+    try {
+      const profileRes = await fetch(
+        `https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(username)}`,
+        {
+          headers: { 'User-Agent': 'SwxStudios/1.0' },
+          signal: AbortSignal.timeout(7000),
+        }
+      );
+      if (profileRes.ok && profileRes.status !== 204) {
+        const pData = (await profileRes.json()) as { id?: string; name?: string };
+        if (pData.id && pData.name) {
+          const rawUuid = pData.id.toLowerCase();
+          const dashedUuid = `${rawUuid.slice(0, 8)}-${rawUuid.slice(8, 12)}-${rawUuid.slice(
+            12,
+            16
+          )}-${rawUuid.slice(16, 20)}-${rawUuid.slice(20)}`;
+
+          let skinUrl: string | null = null;
+          let slim = false;
+          try {
+            const sessRes = await fetch(
+              `https://sessionserver.mojang.com/session/minecraft/profile/${encodeURIComponent(rawUuid)}`,
+              {
+                headers: { 'User-Agent': 'SwxStudios/1.0' },
+                signal: AbortSignal.timeout(7000),
+              }
+            );
+            if (sessRes.ok) {
+              const sData = (await sessRes.json()) as {
+                properties?: Array<{ name?: string; value?: string }>;
+              };
+              const texProp = sData.properties?.find(
+                (prop) => prop.name === 'textures' && prop.value
+              );
+              if (texProp?.value) {
+                const decoded = JSON.parse(
+                  Buffer.from(texProp.value, 'base64').toString('utf-8')
+                ) as {
+                  textures?: {
+                    SKIN?: {
+                      url?: string;
+                      metadata?: { model?: string };
+                    };
+                  };
+                };
+                skinUrl = decoded.textures?.SKIN?.url || null;
+                slim = decoded.textures?.SKIN?.metadata?.model === 'slim';
+              }
+            }
+          } catch {
+            // Fall back to uuid-based lookup
+          }
+
+          const profile = { name: pData.name, rawUuid, dashedUuid, skinUrl, slim };
+          mcProfileCache.set(cacheKey, { expiresAt: Date.now() + 10 * 60_000, profile });
+          return profile;
+        }
+      }
+    } catch {
+      // Fall back to PlayerDB below
+    }
+
+    // Resilient fallback via PlayerDB if Mojang API rate-limits or times out
+    try {
+      const pdbRes = await fetch(
+        `https://playerdb.co/api/player/minecraft/${encodeURIComponent(username)}`,
+        {
+          headers: { 'User-Agent': 'SwxStudios/1.0' },
+          signal: AbortSignal.timeout(7000),
+        }
+      );
+      if (pdbRes.ok) {
+        const pdbData = (await pdbRes.json()) as {
+          success?: boolean;
+          data?: {
+            player?: {
+              id?: string;
+              raw_id?: string;
+              username?: string;
+              skin_texture?: string;
+              properties?: Array<{ name?: string; value?: string }>;
+            };
+          };
+        };
+        const p = pdbData.data?.player;
+        if (pdbData.success && p?.raw_id && p?.username) {
+          let skinUrl = p.skin_texture || null;
+          let slim = false;
+          const texProp = p.properties?.find((prop) => prop.name === 'textures' && prop.value);
+          if (texProp?.value) {
+            try {
+              const decoded = JSON.parse(
+                Buffer.from(texProp.value, 'base64').toString('utf-8')
+              ) as {
+                textures?: {
+                  SKIN?: { url?: string; metadata?: { model?: string } };
+                };
+              };
+              skinUrl = decoded.textures?.SKIN?.url || skinUrl;
+              slim = decoded.textures?.SKIN?.metadata?.model === 'slim';
+            } catch {
+              // Ignore decode error
+            }
+          }
+          const rawUuid = p.raw_id.toLowerCase();
+          const dashedUuid =
+            p.id ||
+            `${rawUuid.slice(0, 8)}-${rawUuid.slice(8, 12)}-${rawUuid.slice(12, 16)}-${rawUuid.slice(
+              16,
+              20
+            )}-${rawUuid.slice(20)}`;
+          const profile = { name: p.username, rawUuid, dashedUuid, skinUrl, slim };
+          mcProfileCache.set(cacheKey, { expiresAt: Date.now() + 10 * 60_000, profile });
+          return profile;
+        }
+      }
+    } catch {
+      // Ignore fallback error
+    }
+
+    return null;
+  };
+
+  app.get('/api/mc/uuid/:username', async (req: Request, res: Response) => {
+    const username = String(req.params.username || '').trim();
+    if (!/^[a-zA-Z0-9_]{1,16}$/.test(username)) {
+      res.status(400).json({ error: 'Minecraft usernames must be 1–16 letters, numbers, or underscores.' });
+      return;
+    }
+
+    try {
+      const resolved = await resolveMojangSessionProfile(username);
+      if (!resolved) {
+        res.status(404).json({ error: `No Java Edition account found for "${username}".` });
+        return;
+      }
+
+      res.json({
+        name: resolved.name,
+        rawUuid: resolved.rawUuid,
+        dashedUuid: resolved.dashedUuid,
+        slim: resolved.slim,
+        avatarUrl: `/api/mc/avatar/${encodeURIComponent(resolved.name)}`,
+        skinTextureUrl: `/api/mc/skin/${encodeURIComponent(resolved.name)}`,
+        skinRenderUrl: `https://mc-heads.net/body/${encodeURIComponent(resolved.rawUuid)}/160`,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to reach Mojang API.';
+      res.status(502).json({ error: message });
+    }
+  });
+
+  app.get('/api/mc/skin/:username', async (req: Request, res: Response) => {
+    const username = String(req.params.username || '').trim();
+    if (!/^[a-zA-Z0-9_]{1,16}$/.test(username)) {
+      res.status(400).json({ error: 'Invalid Minecraft username.' });
+      return;
+    }
+
+    const candidates: string[] = [];
+    try {
+      const resolved = await resolveMojangSessionProfile(username);
+      if (resolved?.skinUrl) {
+        candidates.push(resolved.skinUrl);
+      }
+      if (resolved?.rawUuid) {
+        candidates.push(`https://mc-heads.net/skin/${encodeURIComponent(resolved.rawUuid)}`);
+      }
+    } catch {
+      // Continue to username-based fallbacks
+    }
+
+    candidates.push(
+      `https://mc-heads.net/skin/${encodeURIComponent(username)}`,
+      `https://minotar.net/skin/${encodeURIComponent(username)}`
+    );
+
+    for (const targetUrl of candidates) {
+      try {
+        const imgRes = await fetch(targetUrl, {
+          headers: { 'User-Agent': 'SwxStudios/1.0' },
+          signal: AbortSignal.timeout(7000),
+        });
+        if (!imgRes.ok) continue;
+        const arrBuf = await imgRes.arrayBuffer();
+        if (arrBuf.byteLength < 64) continue;
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        res.send(Buffer.from(arrBuf));
+        return;
+      } catch {
+        // Try next candidate
+      }
+    }
+
+    res.status(404).json({ error: `Could not fetch skin texture for "${username}".` });
+  });
+
+  app.get('/api/mc/avatar/:username', async (req: Request, res: Response) => {
+    const username = String(req.params.username || '').trim();
+    if (!/^[a-zA-Z0-9_]{1,16}$/.test(username)) {
+      res.status(400).json({ error: 'Invalid Minecraft username.' });
+      return;
+    }
+
+    const rawSize = Number(req.query.s);
+    const size = Number.isFinite(rawSize) ? Math.max(16, Math.min(256, Math.round(rawSize))) : 128;
+    const style = req.query.style === '3d' ? 'head' : 'avatar';
+
+    const candidates =
+      style === 'head'
+        ? [
+            `https://mc-heads.net/head/${encodeURIComponent(username)}/${size}`,
+            `https://minotar.net/cube/${encodeURIComponent(username)}/${size}.png`,
+          ]
+        : [
+            `https://mc-heads.net/avatar/${encodeURIComponent(username)}/${size}`,
+            `https://minotar.net/helm/${encodeURIComponent(username)}/${size}.png`,
+          ];
+
+    for (const targetUrl of candidates) {
+      try {
+        const imgRes = await fetch(targetUrl, {
+          headers: { 'User-Agent': 'SwxStudios/1.0' },
+          signal: AbortSignal.timeout(6000),
+        });
+        if (!imgRes.ok) continue;
+        const arrBuf = await imgRes.arrayBuffer();
+        if (arrBuf.byteLength < 64) continue;
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        res.send(Buffer.from(arrBuf));
+        return;
+      } catch {
+        // Try next candidate
+      }
+    }
+
+    res.status(404).json({ error: `Could not load head avatar for "${username}".` });
   });
 
   // Vite middleware in development; static dist serving in production
