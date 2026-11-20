@@ -785,22 +785,6 @@ export const ResourceModal: React.FC<ResourceModalProps> = ({
                 </div>
               </div>
 
-              {/* AI Disclosure Box */}
-              <div className="rounded-lg border border-zinc-800 bg-[#111114] p-3.5 space-y-2 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-zinc-300">AI use in marketing:</span>
-                  <span className="text-zinc-200">
-                    {resolvedSpecs.aiMarketing ? 'Yes' : 'No'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-semibold text-zinc-300">AI use in product:</span>
-                  <span className="text-zinc-200">
-                    {resolvedSpecs.aiProduct ? 'Yes' : 'No'}
-                  </span>
-                </div>
-              </div>
-
               {/* Technical Specs Box */}
               <div className="rounded-lg border border-zinc-800 bg-[#111114] p-3.5 space-y-3 text-xs">
                 <div className="flex items-start justify-between gap-2">

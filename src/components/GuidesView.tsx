@@ -156,13 +156,13 @@ export const GuidesView: React.FC<GuidesViewProps> = ({ onNotify }) => {
         <div>
           <div className="flex items-center gap-2 text-xs font-medium text-rose-400">
             <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>SwxStudios / Server Engineering Guides</span>
+            <span>Server Guides</span>
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-white">
             Minecraft Server Guides
           </h1>
           <p className="mt-1 text-sm text-zinc-400">
-            Practical playbooks for Paper, Purpur, Folia, JVM flags, HEX formatting, shop economy, and Spark profiling.
+            Quick notes and configs for Paper, Purpur, Folia, startup flags, color codes, shops, and Spark.
           </p>
         </div>
 

@@ -97,7 +97,7 @@ export const CommandSearchModal: React.FC<CommandSearchModalProps> = ({
           {toolMatches.length > 0 && onSelectTool && (
             <div>
               <p className="px-3 py-1 font-display-mono text-[10px] font-bold uppercase tracking-wider text-zinc-500">
-                Studio Tools
+                Minecraft Tools
               </p>
               <ul className="space-y-1">
                 {toolMatches.map((tool) => (
@@ -144,10 +144,10 @@ export const CommandSearchModal: React.FC<CommandSearchModalProps> = ({
               >
                 <div className="min-w-0 pr-3">
                   <p className="truncate text-sm font-semibold text-amber-300">
-                    Combat PvP Tier Ledger
+                    PvP Tier List
                   </p>
                   <p className="truncate text-xs text-zinc-400">
-                    8 competitive kits (HT1–LT5) + Owner &amp; Admin /tier commands console
+                    8 kits (HT1–LT5) + Owner &amp; Admin /tier commands
                   </p>
                 </div>
                 <ArrowRight className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
@@ -179,7 +179,7 @@ export const CommandSearchModal: React.FC<CommandSearchModalProps> = ({
                       Server Ranks &amp; Friends
                     </p>
                     <p className="truncate text-xs text-zinc-400">
-                      Discord-style 8-rank roles, friend requests, player search &amp; player suggestions
+                      Server ranks, friend requests, player search &amp; suggestions
                     </p>
                   </div>
                   <ArrowRight className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
@@ -202,10 +202,10 @@ export const CommandSearchModal: React.FC<CommandSearchModalProps> = ({
               >
                 <div className="min-w-0 pr-3">
                   <p className="truncate text-sm font-semibold text-emerald-300">
-                    Studio Stats &amp; Roster
+                    Site Stats &amp; Roster
                   </p>
                   <p className="truncate text-xs text-zinc-400">
-                    Live visits, verified members, studio staff, and catalog inventory list
+                    Live visits, members, staff, and catalog counts
                   </p>
                 </div>
                 <ArrowRight className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />

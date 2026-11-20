@@ -111,6 +111,8 @@ export type ServerRankId =
   | 'paid'
   | 'free';
 
+export type FriendAvailabilityStatus = 'online' | 'away' | 'offline';
+
 export interface PublicMemberProfile {
   uid: string;
   displayName: string;
@@ -120,6 +122,7 @@ export interface PublicMemberProfile {
   serverRoles?: ServerRankId[];
   membershipTier: MembershipTier;
   xp: number;
+  presenceStatus?: FriendAvailabilityStatus;
   joinedAt?: string;
   updatedAt?: string;
 }

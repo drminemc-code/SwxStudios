@@ -433,13 +433,13 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         <div>
           <div className="flex items-center gap-2 text-xs font-medium text-zinc-400">
             <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
-            <span>SwxStudios / Owner Studio &amp; Control Panel</span>
+            <span>Admin Panel</span>
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-white">
             Owner Admin &amp; Site Controls
           </h1>
           <p className="mt-1 text-sm text-zinc-400">
-            Upload packages, configure BuiltByBit-style resource specifications, manage your catalog, and moderate the site.
+            Upload packages, set resource details, manage your catalog, and moderate the site.
           </p>
         </div>
 
@@ -851,12 +851,12 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               </div>
             </div>
 
-            {/* Compliance & AI Disclosure Flags */}
+            {/* Package Flags */}
             <div className="space-y-3 border-t border-zinc-800/80 pt-4">
               <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
-                Compliance &amp; AI Disclosure
+                Package Flags
               </h3>
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
                 <label className="flex cursor-pointer items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-200">
                   <span>Open source</span>
                   <input
@@ -883,26 +883,6 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                     type="checkbox"
                     checked={draft.unobfuscated !== false}
                     onChange={(e) => setDraft((p) => ({ ...p, unobfuscated: e.target.checked }))}
-                    className="h-4 w-4 accent-white"
-                  />
-                </label>
-
-                <label className="flex cursor-pointer items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-200">
-                  <span>AI use in marketing</span>
-                  <input
-                    type="checkbox"
-                    checked={Boolean(draft.aiMarketing)}
-                    onChange={(e) => setDraft((p) => ({ ...p, aiMarketing: e.target.checked }))}
-                    className="h-4 w-4 accent-white"
-                  />
-                </label>
-
-                <label className="flex cursor-pointer items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-200 sm:col-span-2">
-                  <span>AI use in product</span>
-                  <input
-                    type="checkbox"
-                    checked={Boolean(draft.aiProduct)}
-                    onChange={(e) => setDraft((p) => ({ ...p, aiProduct: e.target.checked }))}
                     className="h-4 w-4 accent-white"
                   />
                 </label>
@@ -1170,12 +1150,6 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   <span className="text-zinc-400">Unobfuscated:</span>
                   <span className="text-zinc-200">
                     {draft.unobfuscated !== false ? 'Yes' : 'No'}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">AI in marketing / product:</span>
-                  <span className="text-zinc-200">
-                    {draft.aiMarketing ? 'Yes' : 'No'} / {draft.aiProduct ? 'Yes' : 'No'}
                   </span>
                 </div>
               </div>

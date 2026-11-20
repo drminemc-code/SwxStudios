@@ -752,13 +752,13 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
         <div>
           <div className="flex items-center gap-2 font-display-mono text-xs font-medium text-rose-400">
             <Wrench className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>SwxStudios / {TOOL_DIRECTORY.length} Minecraft Utilities &amp; Calculators</span>
+            <span>{TOOL_DIRECTORY.length} Minecraft Tools</span>
           </div>
           <h1 className="mt-1 font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
-            Studio Tools Hub
+            Minecraft Tools
           </h1>
           <p className="mt-1 text-sm text-zinc-400">
-            MOTD &amp; Unicode font generators, Command builder, Seed map, JAR scanner, Live server status, Skin viewer, Gear/Enchant planners, and Spark diagnostics.
+            MOTD maker, font &amp; gradient generators, command builder, seed map, JAR scanner, skin viewer, and calculators.
           </p>
         </div>
 

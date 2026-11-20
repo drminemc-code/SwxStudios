@@ -97,7 +97,7 @@ export const ExploreMapModal: React.FC<ExploreMapModalProps> = ({ server, onClos
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 text-[11px] font-medium text-rose-400">
               <Compass className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              <span>Explore Map · Stylized World Preview</span>
+              <span>World Map Preview</span>
               <span className="rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 font-display-mono text-[10px] text-zinc-300">
                 {server.address}
               </span>
@@ -150,7 +150,7 @@ export const ExploreMapModal: React.FC<ExploreMapModalProps> = ({ server, onClos
                 className="inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-800 bg-[#111114] px-3 text-xs font-semibold text-zinc-200 hover:border-zinc-700 hover:text-white"
               >
                 <RefreshCw className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
-                <span>Regenerate World</span>
+                <span>New Seed</span>
               </button>
 
               <button
@@ -172,7 +172,7 @@ export const ExploreMapModal: React.FC<ExploreMapModalProps> = ({ server, onClos
               width={960}
               height={540}
               className="block w-full aspect-video"
-              aria-label={`Stylized isometric world preview of ${server.name}`}
+              aria-label={`Isometric world preview of ${server.name}`}
             />
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-800/80 bg-[#0b0b0f] px-3.5 py-2">
               <span className="text-[11px] font-medium text-zinc-300">

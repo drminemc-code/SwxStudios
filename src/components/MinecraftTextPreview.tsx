@@ -144,7 +144,7 @@ export const LiveMotdCard: React.FC<LiveMotdCardProps> = ({
           <img
             src={
               iconUrl ||
-              '/assets/aistudio/Gemini_Generated_Image_m1vgo5m1vgo5m1vg_2bbe67cb.jpeg'
+              '/assets/brand/swx-emblem.jpg'
             }
             alt={`${serverName} icon 64x64`}
             className="h-full w-full object-cover"
@@ -417,7 +417,7 @@ export const InteractiveHeroServerCard: React.FC<InteractiveHeroServerCardProps>
           <img
             src={
               activeLive?.iconBase64 ||
-              '/assets/aistudio/Gemini_Generated_Image_m1vgo5m1vgo5m1vg_2bbe67cb.jpeg'
+              '/assets/brand/swx-emblem.jpg'
             }
             alt={`${displayName} server icon`}
             className="h-full w-full object-cover"

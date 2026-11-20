@@ -201,7 +201,7 @@ export function resolveWorldPreviewSpec(
     primaryArchetype,
     secondaryArchetypes,
     title: ARCHETYPE_TITLES[primaryArchetype],
-    subtitle: `Stylized world diorama generated from ${tagSummary}`,
+    subtitle: `World preview for ${tagSummary}`,
     landmarks: Array.from(landmarkSet).slice(0, 4),
     palette: ARCHETYPE_PALETTES[primaryArchetype],
   };

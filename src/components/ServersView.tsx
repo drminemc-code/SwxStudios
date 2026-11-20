@@ -526,13 +526,13 @@ export const ServersView: React.FC<ServersViewProps> = ({
         <div className="max-w-xl">
           <div className="flex items-center gap-2 text-xs font-medium text-rose-400">
             <Server className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>SwxStudios / Live Minecraft Server List</span>
+            <span>Server List</span>
           </div>
           <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-white">
             Minecraft server list
           </h1>
           <p className="mt-1 text-sm text-zinc-400">
-            Every listing connects live against its server IP for real-time Online status, Ping ms, TPS/MSPT, Players, and Top Players.
+            Live Java and Bedrock server status, ping, player counts, and MOTDs.
           </p>
         </div>
 
@@ -593,7 +593,7 @@ export const ServersView: React.FC<ServersViewProps> = ({
           <div>
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <Wifi className="h-4 w-4 text-emerald-400" aria-hidden="true" />
-              <span>Instant Auto-Connect Server IP ({resolveProbeRegionInfo(probeRegion).label})</span>
+              <span>Check Any Server IP ({resolveProbeRegionInfo(probeRegion).label})</span>
             </h2>
             <p className="mt-0.5 text-xs text-zinc-400">
               Type any Java or Bedrock IP (e.g. <span className="font-display-mono text-zinc-300">donutsmp.net</span>, <span className="font-display-mono text-zinc-300">mcpvp.club</span>, or <span className="font-display-mono text-zinc-300">acersmp.xyz</span>) to connect automatically and inspect status, ping, players, and MOTD.

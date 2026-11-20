@@ -830,6 +830,10 @@
           "type": "string",
           "enum": ["free", "premium", "ultimate"]
         },
+        "presenceStatus": {
+          "type": "string",
+          "enum": ["online", "away", "offline"]
+        },
         "xp": {
           "type": "number"
         },

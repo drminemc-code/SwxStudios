@@ -1,8 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, Check, Lock, RefreshCw, ShieldCheck } from 'lucide-react';
-import { generateRayId, solveChallengeProof } from '../utils/botVerifyLogic';
+import {
+  createLocalShieldToken,
+  DEFAULT_CHALLENGE_DIFFICULTY,
+  generateRayId,
+  solveChallengeProof,
+  SWX_SHIELD_TOKEN_STORAGE_KEY,
+  verifyChallengeProof,
+} from '../utils/botVerifyLogic';
 
-const LOGO_URL = '/assets/aistudio/Gemini_Generated_Image_m1vgo5m1vgo5m1vg_2bbe67cb.jpeg';
+const LOGO_URL = '/assets/brand/swx-emblem.jpg';
 
 export type VerifyWidgetStatus = 'idle' | 'verifying' | 'verified' | 'error';
 
@@ -11,6 +18,25 @@ interface ChallengeResponse {
   nonce: string;
   difficulty: number;
   rayId: string;
+}
+
+async function parseJsonSafe<T>(res: Response): Promise<T | null> {
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (!ct.includes('application/json')) return null;
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return null;
+  }
+}
+
+function persistShieldToken(token: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SWX_SHIELD_TOKEN_STORAGE_KEY, token);
+  } catch {
+    // Ignore storage quota or private mode restrictions
+  }
 }
 
 interface TurnstileVerifyWidgetProps {
@@ -45,6 +71,30 @@ export const TurnstileVerifyWidget: React.FC<TurnstileVerifyWidgetProps> = ({
     if (rayIdHint) setRayId(rayIdHint);
   }, [rayIdHint]);
 
+  const completeLocalFallback = useCallback(
+    async (seedRayId: string) => {
+      const localNonce = `${Date.now().toString(16)}-${Math.random().toString(36).slice(2, 10)}`;
+      const localRay = seedRayId || generateRayId(localNonce);
+      const [solved] = await Promise.all([
+        Promise.resolve(solveChallengeProof(localNonce, DEFAULT_CHALLENGE_DIFFICULTY)),
+        new Promise((r) => window.setTimeout(r, 380)),
+      ]);
+      if (
+        !solved ||
+        !verifyChallengeProof(localNonce, solved.counter, DEFAULT_CHALLENGE_DIFFICULTY)
+      ) {
+        throw new Error('Verification check timed out. Please retry.');
+      }
+      const localToken = createLocalShieldToken(localNonce, solved.counter, localRay);
+      persistShieldToken(localToken);
+      const verifiedAt = new Date().toISOString();
+      setRayId(localRay);
+      setStatus('verified');
+      onVerified({ rayId: localRay, verifiedAt });
+    },
+    [onVerified]
+  );
+
   const handleRunVerify = useCallback(async () => {
     if (busyRef.current || status === 'verified') return;
     busyRef.current = true;
@@ -52,14 +102,24 @@ export const TurnstileVerifyWidget: React.FC<TurnstileVerifyWidgetProps> = ({
     setErrorMsg(null);
 
     try {
-      const challengeRes = await fetch('/api/verify/challenge', {
-        credentials: 'include',
-        cache: 'no-store',
-      });
-      if (!challengeRes.ok) {
-        throw new Error('Could not initialize verification challenge.');
+      let challenge: ChallengeResponse | null = null;
+      try {
+        const challengeRes = await fetch('/api/verify/challenge', {
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        if (challengeRes.ok) {
+          challenge = await parseJsonSafe<ChallengeResponse>(challengeRes);
+        }
+      } catch {
+        challenge = null;
       }
-      const challenge = (await challengeRes.json()) as ChallengeResponse;
+
+      if (!challenge || !challenge.challengeToken || !challenge.nonce) {
+        await completeLocalFallback(rayId);
+        return;
+      }
+
       if (challenge.rayId) setRayId(challenge.rayId);
 
       // Authentic brief Turnstile inspection delay + client PoW computation
@@ -72,28 +132,46 @@ export const TurnstileVerifyWidget: React.FC<TurnstileVerifyWidgetProps> = ({
         throw new Error('Verification check timed out. Please retry.');
       }
 
-      const submitRes = await fetch('/api/verify/submit', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          challengeToken: challenge.challengeToken,
-          counter: solved.counter,
-          humanInteraction: true,
-          elapsedMs: Math.max(120, Date.now() - mountedAtRef.current),
-        }),
-      });
-
-      const result = (await submitRes.json()) as {
+      let submitRes: Response | null = null;
+      let result: {
         ok?: boolean;
         verified?: boolean;
         rayId?: string;
         verifiedAt?: string;
+        verificationToken?: string;
         error?: string;
-      };
+      } | null = null;
+
+      try {
+        submitRes = await fetch('/api/verify/submit', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            challengeToken: challenge.challengeToken,
+            counter: solved.counter,
+            humanInteraction: true,
+            elapsedMs: Math.max(120, Date.now() - mountedAtRef.current),
+          }),
+        });
+        result = await parseJsonSafe(submitRes);
+      } catch {
+        submitRes = null;
+        result = null;
+      }
+
+      // If backend is unreachable, returned HTML/non-JSON, or 404/5xx, verify locally so users are never locked out
+      if (!submitRes || !result || submitRes.status === 404 || submitRes.status >= 500) {
+        await completeLocalFallback(challenge.rayId || rayId);
+        return;
+      }
 
       if (!submitRes.ok || !result.verified) {
         throw new Error(result.error || 'Bot check rejected. Please try again.');
+      }
+
+      if (result.verificationToken) {
+        persistShieldToken(result.verificationToken);
       }
 
       const finalRay = result.rayId || challenge.rayId || rayId;
@@ -106,7 +184,7 @@ export const TurnstileVerifyWidget: React.FC<TurnstileVerifyWidgetProps> = ({
     } finally {
       busyRef.current = false;
     }
-  }, [onVerified, rayId, status]);
+  }, [completeLocalFallback, onVerified, rayId, status]);
 
   return (
     <div
@@ -167,16 +245,16 @@ export const TurnstileVerifyWidget: React.FC<TurnstileVerifyWidgetProps> = ({
             {!compact && (
               <p className="text-[10px] text-zinc-400">
                 {status === 'verified'
-                  ? 'Connection verified · Proceeding'
+                  ? 'Verified · Continuing'
                   : status === 'verifying'
-                  ? 'Checking browser integrity & proof'
-                  : 'Complete anti-bot check to continue'}
+                  ? 'Checking browser...'
+                  : 'Click to verify'}
               </p>
             )}
           </div>
         </button>
 
-        {/* Right Turnstile-style Security Badge */}
+        {/* Security Badge */}
         <div className="flex shrink-0 flex-col items-end text-right">
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="h-4 w-4 text-rose-400" aria-hidden="true" />
@@ -185,7 +263,7 @@ export const TurnstileVerifyWidget: React.FC<TurnstileVerifyWidgetProps> = ({
             </span>
           </div>
           <div className="mt-0.5 flex items-center gap-1.5 font-display-mono text-[9px] text-zinc-500">
-            <span>Turnstile</span>
+            <span>Check</span>
             <span aria-hidden="true">·</span>
             <span>{rayId.slice(0, 8)}</span>
           </div>
@@ -208,6 +286,15 @@ interface BotVerifyGateProps {
 
 export const BotVerifyGate: React.FC<BotVerifyGateProps> = ({ rayId, onPassed }) => {
   const [verified, setVerified] = useState(false);
+  const passTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (passTimerRef.current !== null) {
+        window.clearTimeout(passTimerRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="flex min-h-screen flex-col justify-between bg-[#08080a] px-4 py-8 text-zinc-100 sm:px-6">
@@ -216,7 +303,7 @@ export const BotVerifyGate: React.FC<BotVerifyGateProps> = ({ rayId, onPassed })
         <div className="flex items-center gap-3">
           <img
             src={LOGO_URL}
-            alt="SwaxtuMC Studios logo"
+            alt="SwxStudios logo"
             className="h-9 w-9 rounded-md border border-zinc-800 bg-black object-cover"
           />
           <div>
@@ -230,15 +317,15 @@ export const BotVerifyGate: React.FC<BotVerifyGateProps> = ({ rayId, onPassed })
               </span>
             </div>
             <p className="text-xs text-zinc-400">
-              Checking if the site connection is secure
+              Verifying your browser
             </p>
           </div>
         </div>
 
-        {/* Main Turnstile Prompt Box */}
+        {/* Verification Box */}
         <div className="mt-7 rounded-xl border border-zinc-800/90 bg-[#0d0d11] p-6 shadow-2xl">
           <h1 className="font-display text-xl font-bold tracking-tight text-white sm:text-2xl">
-            Verify you are human by completing the action below.
+            Quick check before continuing.
           </h1>
 
           <div className="mt-5 max-w-[360px]">
@@ -247,7 +334,11 @@ export const BotVerifyGate: React.FC<BotVerifyGateProps> = ({ rayId, onPassed })
               rayIdHint={rayId}
               onVerified={({ rayId: nextRay }) => {
                 setVerified(true);
-                window.setTimeout(() => {
+                if (passTimerRef.current !== null) {
+                  window.clearTimeout(passTimerRef.current);
+                }
+                passTimerRef.current = window.setTimeout(() => {
+                  passTimerRef.current = null;
                   onPassed({ rayId: nextRay });
                 }, 420);
               }}
@@ -255,19 +346,18 @@ export const BotVerifyGate: React.FC<BotVerifyGateProps> = ({ rayId, onPassed })
           </div>
 
           <p className="mt-6 text-xs leading-relaxed text-zinc-400">
-            SwxStudios needs to review the security of your connection before proceeding to
-            plugins, tools, live server status pings, and the 3D skin viewer.
+            Just making sure you&apos;re a real person before loading the site.
           </p>
         </div>
       </div>
 
-      {/* Cloudflare-style Diagnostic Ray ID Footer */}
+      {/* Diagnostic Ray ID Footer */}
       <footer className="mx-auto mt-12 w-full max-w-[540px] border-t border-zinc-800/80 pt-4 text-center font-display-mono text-[11px] text-zinc-500">
         <p>
           Ray ID: <span className="text-zinc-300">{rayId}</span>
         </p>
         <p className="mt-1 text-zinc-500">
-          Performance &amp; security by <span className="text-zinc-300">SwxShield</span>
+          Protected by <span className="text-zinc-300">SwxShield</span>
         </p>
       </footer>
     </div>

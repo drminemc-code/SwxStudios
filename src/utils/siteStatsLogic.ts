@@ -235,14 +235,14 @@ export function buildStudioStatsOverview(input: {
   const rows: StudioStatsListRow[] = [
     {
       id: 'visits',
-      label: 'Total Studio Visits',
+      label: 'Total Site Visits',
       category: 'traffic',
       categoryLabel: 'Traffic',
       count: safeVisits,
       detail:
         safeVisits === 0
-          ? 'Live Firestore visitor counter initialized'
-          : `${safeVisits.toLocaleString()} recorded studio ${safeVisits === 1 ? 'visit' : 'visits'}`,
+          ? 'Visitor counter active'
+          : `${safeVisits.toLocaleString()} site ${safeVisits === 1 ? 'visit' : 'visits'}`,
     },
     {
       id: 'members',
@@ -261,11 +261,11 @@ export function buildStudioStatsOverview(input: {
     },
     {
       id: 'staffs',
-      label: 'Studio Staff Roster',
+      label: 'Staff Roster',
       category: 'people',
       categoryLabel: 'People',
       count: staffs.length,
-      detail: `${ownersCount} Studio ${ownersCount === 1 ? 'Owner' : 'Owners'} · ${adminsCount} Tier ${
+      detail: `${ownersCount} ${ownersCount === 1 ? 'Owner' : 'Owners'} · ${adminsCount} Tier ${
         adminsCount === 1 ? 'Admin' : 'Admins'
       }`,
       targetTab: 'tiers',
@@ -303,13 +303,13 @@ export function buildStudioStatsOverview(input: {
       detail:
         input.tierPlayers.length === 0
           ? '0 ranked players added yet across 8 PvP kits'
-          : `${input.tierPlayers.length} ranked fighters across 8 competitive kits`,
+          : `${input.tierPlayers.length} ranked players across 8 PvP kits`,
       targetTab: 'tiers',
       actionLabel: 'Tier List',
     },
     {
       id: 'tools',
-      label: 'Minecraft Utilities & Tools',
+      label: 'Minecraft Tools',
       category: 'stuffs',
       categoryLabel: 'Stuffs',
       count: input.toolsCount,

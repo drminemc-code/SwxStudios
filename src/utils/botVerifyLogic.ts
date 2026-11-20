@@ -68,3 +68,76 @@ export function generateRayId(seed?: string): string {
   const randomSeed = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return fnv1aHex(randomSeed);
 }
+
+export const SWX_SHIELD_TOKEN_STORAGE_KEY = 'swx_shield_token';
+export const SWX_SHIELD_LOCAL_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface LocalShieldPayload {
+  nonce: string;
+  counter: number;
+  rayId: string;
+  verifiedAt: string;
+  exp: number;
+  digest: string;
+}
+
+export function createLocalShieldToken(
+  nonce: string,
+  counter: number,
+  rayId: string,
+  nowMs = Date.now()
+): string {
+  const verifiedAt = new Date(nowMs).toISOString();
+  const exp = nowMs + SWX_SHIELD_LOCAL_TTL_MS;
+  const payload: LocalShieldPayload = {
+    nonce,
+    counter,
+    rayId,
+    verifiedAt,
+    exp,
+    digest: fnv1aHex(`swx-local:${nonce}:${counter}:${rayId}:${exp}`),
+  };
+  return `local.${encodeURIComponent(JSON.stringify(payload))}`;
+}
+
+export function isLocalShieldToken(token: string | null | undefined): boolean {
+  return typeof token === 'string' && token.startsWith('local.');
+}
+
+export function verifyLocalShieldToken(
+  token: string | null | undefined,
+  nowMs = Date.now()
+): { valid: boolean; rayId?: string; verifiedAt?: string; exp?: number } {
+  if (!isLocalShieldToken(token)) return { valid: false };
+  try {
+    const raw = decodeURIComponent(token!.slice('local.'.length));
+    const parsed = JSON.parse(raw) as Partial<LocalShieldPayload>;
+    if (
+      !parsed ||
+      typeof parsed.nonce !== 'string' ||
+      typeof parsed.counter !== 'number' ||
+      typeof parsed.rayId !== 'string' ||
+      typeof parsed.exp !== 'number' ||
+      typeof parsed.digest !== 'string'
+    ) {
+      return { valid: false };
+    }
+    if (nowMs >= parsed.exp) return { valid: false };
+    if (!verifyChallengeProof(parsed.nonce, parsed.counter, DEFAULT_CHALLENGE_DIFFICULTY)) {
+      return { valid: false };
+    }
+    const expectedDigest = fnv1aHex(
+      `swx-local:${parsed.nonce}:${parsed.counter}:${parsed.rayId}:${parsed.exp}`
+    );
+    if (parsed.digest !== expectedDigest) return { valid: false };
+    return {
+      valid: true,
+      rayId: parsed.rayId,
+      verifiedAt: typeof parsed.verifiedAt === 'string' ? parsed.verifiedAt : undefined,
+      exp: parsed.exp,
+    };
+  } catch {
+    return { valid: false };
+  }
+}
+

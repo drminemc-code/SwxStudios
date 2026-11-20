@@ -5,8 +5,13 @@ import {
   buildDeterministicFriendshipId,
   categorizeFriendships,
   filterMembersByDisplayName,
+  getAvailabilityMeta,
   getFriendOtherParticipant,
   getSuggestedMembersToAdd,
+  isValidPresenceStatus,
+  PRESENCE_AWAY_WINDOW_MS,
+  PRESENCE_ONLINE_WINDOW_MS,
+  resolveMemberAvailability,
   resolveMemberServerRoles,
   sanitizeServerRolesList,
   searchPlayersAndMembers,
@@ -254,4 +259,68 @@ test('categorizeFriendships & getSuggestedMembersToAdd isolate blocked friendshi
     suggested.map((m) => m.uid),
     ['u3']
   );
+});
+
+test('resolveMemberAvailability & getAvailabilityMeta classify online, away, and offline friends accurately', () => {
+  const now = 1_750_000_000_000;
+
+  assert.equal(isValidPresenceStatus('online'), true);
+  assert.equal(isValidPresenceStatus('away'), true);
+  assert.equal(isValidPresenceStatus('offline'), true);
+  assert.equal(isValidPresenceStatus('busy'), false);
+
+  // Missing member or explicit offline -> offline
+  assert.equal(resolveMemberAvailability(null, now), 'offline');
+  assert.equal(
+    resolveMemberAvailability(
+      { presenceStatus: 'offline', updatedAt: new Date(now).toISOString() },
+      now
+    ),
+    'offline'
+  );
+
+  // Active within online window -> online
+  assert.equal(
+    resolveMemberAvailability(
+      { presenceStatus: 'online', updatedAt: new Date(now - 60_000).toISOString() },
+      now
+    ),
+    'online'
+  );
+
+  // Explicit away within window -> away
+  assert.equal(
+    resolveMemberAvailability(
+      { presenceStatus: 'away', updatedAt: new Date(now - 60_000).toISOString() },
+      now
+    ),
+    'away'
+  );
+
+  // Stale heartbeat beyond 5 minutes -> away
+  assert.equal(
+    resolveMemberAvailability(
+      { presenceStatus: 'online', updatedAt: new Date(now - PRESENCE_ONLINE_WINDOW_MS - 1_000).toISOString() },
+      now
+    ),
+    'away'
+  );
+
+  // Stale heartbeat beyond 20 minutes -> offline
+  assert.equal(
+    resolveMemberAvailability(
+      { presenceStatus: 'online', updatedAt: new Date(now - PRESENCE_AWAY_WINDOW_MS - 1_000).toISOString() },
+      now
+    ),
+    'offline'
+  );
+
+  // Missing updatedAt falls back to explicit non-offline presence or offline
+  assert.equal(resolveMemberAvailability({ presenceStatus: 'online' }, now), 'online');
+  assert.equal(resolveMemberAvailability({ presenceStatus: 'away' }, now), 'away');
+  assert.equal(resolveMemberAvailability({}, now), 'offline');
+
+  assert.equal(getAvailabilityMeta('online').dotClassName, 'bg-emerald-500');
+  assert.equal(getAvailabilityMeta('away').dotClassName, 'bg-amber-400');
+  assert.equal(getAvailabilityMeta('offline').dotClassName, 'bg-zinc-500');
 });

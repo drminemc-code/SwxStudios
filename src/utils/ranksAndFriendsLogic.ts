@@ -1,4 +1,5 @@
 import type {
+  FriendAvailabilityStatus,
   FriendshipRecord,
   MembershipTier,
   PlayerSuggestionRecord,
@@ -51,7 +52,7 @@ export const SERVER_RANKS: readonly ServerRankMeta[] = [
     category: 'leadership',
     hoisted: true,
     hexColor: '#f59e0b',
-    description: 'Senior Administrator managing PvP Tier Ledger standings, player suggestions, and operations.',
+    description: 'Senior admin managing PvP tier standings, player suggestions, and moderation.',
     perks: ['Execute /tier Admin Commands', 'Review Player Suggestions', 'Moderate Listings'],
   },
   {
@@ -430,3 +431,71 @@ export function searchPlayersAndMembers(
     suggestableIgn,
   };
 }
+
+export const PRESENCE_ONLINE_WINDOW_MS = 5 * 60 * 1000;
+export const PRESENCE_AWAY_WINDOW_MS = 20 * 60 * 1000;
+
+export function isValidPresenceStatus(value: unknown): value is FriendAvailabilityStatus {
+  return value === 'online' || value === 'away' || value === 'offline';
+}
+
+export function resolveMemberAvailability(
+  member: Pick<PublicMemberProfile, 'presenceStatus' | 'updatedAt'> | null | undefined,
+  nowMs = Date.now()
+): FriendAvailabilityStatus {
+  if (!member) return 'offline';
+  if (member.presenceStatus === 'offline') return 'offline';
+
+  const parsedTs =
+    typeof member.updatedAt === 'string' && member.updatedAt.trim()
+      ? Date.parse(member.updatedAt)
+      : Number.NaN;
+
+  if (Number.isFinite(parsedTs)) {
+    const ageMs = Math.max(0, nowMs - parsedTs);
+    if (ageMs > PRESENCE_AWAY_WINDOW_MS) return 'offline';
+    if (member.presenceStatus === 'away' || ageMs > PRESENCE_ONLINE_WINDOW_MS) return 'away';
+    return 'online';
+  }
+
+  if (member.presenceStatus === 'online' || member.presenceStatus === 'away') {
+    return member.presenceStatus;
+  }
+
+  return 'offline';
+}
+
+export interface AvailabilityMeta {
+  status: FriendAvailabilityStatus;
+  label: string;
+  dotClassName: string;
+  textClassName: string;
+}
+
+export function getAvailabilityMeta(status: FriendAvailabilityStatus): AvailabilityMeta {
+  switch (status) {
+    case 'online':
+      return {
+        status: 'online',
+        label: 'Online',
+        dotClassName: 'bg-emerald-500',
+        textClassName: 'text-emerald-400',
+      };
+    case 'away':
+      return {
+        status: 'away',
+        label: 'Away',
+        dotClassName: 'bg-amber-400',
+        textClassName: 'text-amber-300',
+      };
+    case 'offline':
+    default:
+      return {
+        status: 'offline',
+        label: 'Offline',
+        dotClassName: 'bg-zinc-500',
+        textClassName: 'text-zinc-500',
+      };
+  }
+}
+

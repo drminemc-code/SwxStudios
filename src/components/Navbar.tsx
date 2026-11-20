@@ -23,7 +23,7 @@ import { DisplayIdentity, MembershipTier, NavTab } from '../types';
 import { MinecraftHeadAvatar } from './MinecraftHeadAvatar';
 import { TOOL_DIRECTORY } from './ToolsView';
 
-const LOGO_URL = '/assets/aistudio/Gemini_Generated_Image_m1vgo5m1vgo5m1vg_2bbe67cb.jpeg';
+const LOGO_URL = '/assets/brand/swx-emblem.jpg';
 
 interface NavbarProps {
   activeTab: NavTab;
@@ -50,7 +50,7 @@ const NAV_ITEMS: { id: NavTab; label: string; group: 'platform' | 'resources' }[
   { id: 'servers', label: 'Servers', group: 'platform' },
   { id: 'tiers', label: 'Tier List', group: 'platform' },
   { id: 'ranks', label: 'Ranks & Friends', group: 'platform' },
-  { id: 'stats', label: 'Studio Stats', group: 'platform' },
+  { id: 'stats', label: 'Site Stats', group: 'platform' },
   { id: 'guides', label: 'Guides', group: 'platform' },
   { id: 'downloads', label: 'Downloads', group: 'resources' },
   { id: 'exclusive', label: 'Exclusive', group: 'resources' },
@@ -131,7 +131,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <img
               src={LOGO_URL}
-              alt="SwaxtuMC Studios logo"
+              alt="SwxStudios logo"
               className="h-8 w-8 shrink-0 rounded-md border border-zinc-800 bg-black object-cover"
             />
             <span className="font-display text-xs sm:text-sm font-extrabold uppercase tracking-[0.06em] whitespace-nowrap">
@@ -484,7 +484,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
               <div className="flex items-center gap-2.5">
                 <img
                   src={LOGO_URL}
-                  alt="SwaxtuMC Studios logo"
+                  alt="SwxStudios logo"
                   className="h-8 w-8 rounded-md border border-zinc-800 bg-black object-cover"
                 />
                 <div>
@@ -492,7 +492,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                     SWXSTUDIOS
                   </p>
                   <p className="text-[10px] font-medium text-rose-400">
-                    Tools, Servers &amp; Releases
+                    Plugins, Servers &amp; Tools
                   </p>
                 </div>
               </div>

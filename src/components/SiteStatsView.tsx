@@ -47,7 +47,7 @@ export const SiteStatsHomeStrip: React.FC<SiteStatsHomeStripProps> = ({
           <div className="flex items-center gap-2">
             <BarChart3 className="h-4 w-4 text-rose-400" aria-hidden="true" />
             <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-200">
-              Studio Live Stats &amp; Directory
+              Site Stats
             </h2>
             <span
               className={`font-display-mono rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
@@ -149,7 +149,7 @@ export const SiteStatsView: React.FC<SiteStatsViewProps> = ({
                 <BarChart3 className="h-4 w-4" aria-hidden="true" />
               </div>
               <h1 className="font-display text-xl sm:text-2xl font-extrabold tracking-tight text-white">
-                Studio Stats &amp; Roster
+                Site Stats &amp; Roster
               </h1>
               <span
                 className={`rounded border px-2 py-0.5 font-display-mono text-[10px] font-semibold uppercase tracking-wider ${
@@ -158,11 +158,11 @@ export const SiteStatsView: React.FC<SiteStatsViewProps> = ({
                     : 'border-zinc-700 bg-zinc-900 text-zinc-400'
                 }`}
               >
-                {cloudConnected ? 'Firestore Live' : 'Syncing'}
+                {cloudConnected ? 'Live' : 'Syncing'}
               </span>
             </div>
             <p className="max-w-2xl text-xs sm:text-sm text-zinc-400">
-              Live overview of SwxStudios visits, verified members, studio staff, and every resource, server, tool, and PvP tier listing across the platform.
+              Live visits, members, staff, packages, servers, tools, and PvP tier players.
             </p>
           </div>
 
@@ -203,10 +203,10 @@ export const SiteStatsView: React.FC<SiteStatsViewProps> = ({
         <div className="flex flex-col gap-3 border-b border-zinc-800 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between sm:px-5">
           <div>
             <h2 className="text-sm font-bold text-white">
-              Visits, Members, Staffs &amp; Stuffs List
+              Visits, Members, Staff &amp; Catalog
             </h2>
             <p className="text-xs text-zinc-400">
-              Live counts across traffic, community accounts, staff, and studio inventory.
+              Current totals for site traffic, accounts, staff, and uploads.
             </p>
           </div>
 
@@ -334,7 +334,7 @@ export const SiteStatsView: React.FC<SiteStatsViewProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 pb-3">
           <div className="flex items-center gap-2">
             <FolderArchive className="h-4 w-4 text-amber-300" aria-hidden="true" />
-            <h2 className="text-sm font-bold text-white">Catalog Stuffs by Category</h2>
+            <h2 className="text-sm font-bold text-white">Packages by Category</h2>
           </div>
           <span className="font-display-mono text-xs text-zinc-400 tabular-nums">
             {overview.resourcesCount} packages · {overview.totalDownloads.toLocaleString()} downloads
@@ -369,7 +369,7 @@ export const SiteStatsView: React.FC<SiteStatsViewProps> = ({
           <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
             <div className="flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-rose-400" aria-hidden="true" />
-              <h2 className="text-sm font-bold text-white">Studio Staff Roster</h2>
+              <h2 className="text-sm font-bold text-white">Staff Roster</h2>
             </div>
             <button
               type="button"
@@ -398,8 +398,8 @@ export const SiteStatsView: React.FC<SiteStatsViewProps> = ({
                     <p className="truncate text-xs font-bold text-white">{staff.displayName}</p>
                     <p className="text-[11px] text-zinc-500">
                       {staff.role === 'owner'
-                        ? 'Full Studio & Catalog Controls'
-                        : 'Combat PvP Tier Administrator'}
+                        ? 'Site & Catalog Owner'
+                        : 'PvP Tier Admin'}
                     </p>
                   </div>
                 </div>

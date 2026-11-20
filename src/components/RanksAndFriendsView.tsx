@@ -28,9 +28,11 @@ import type {
 } from '../types';
 import {
   categorizeFriendships,
+  getAvailabilityMeta,
   getFriendOtherParticipant,
   getServerRankMeta,
   getSuggestedMembersToAdd,
+  resolveMemberAvailability,
   resolveMemberServerRoles,
   searchPlayersAndMembers,
   SERVER_RANKS,
@@ -460,11 +462,11 @@ export const RanksAndFriendsView: React.FC<RanksAndFriendsViewProps> = ({
                 Server Ranks &amp; Friends
               </h1>
               <span className="rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 font-display-mono text-[10px] font-semibold uppercase tracking-wider text-zinc-300">
-                Discord-Style Roles
+                Server Roles
               </span>
             </div>
             <p className="max-w-2xl text-xs sm:text-sm text-zinc-400">
-              Inspect player ranks across the 8-role hierarchy, search players by name or IGN, send &amp; accept friend requests, and suggest players to add.
+              Check player ranks, search by name or Minecraft IGN, add friends, and suggest players.
             </p>
           </div>
 
@@ -942,7 +944,7 @@ export const RanksAndFriendsView: React.FC<RanksAndFriendsViewProps> = ({
                     onClick={onOpenTiers}
                     className="text-xs font-semibold text-amber-300 hover:text-amber-200"
                   >
-                    Open Tier Ledger
+                    Open Tier List
                   </button>
                 )}
               </div>
@@ -1207,6 +1209,8 @@ export const RanksAndFriendsView: React.FC<RanksAndFriendsViewProps> = ({
                   const friendRank = friendMember
                     ? resolveMemberServerRoles(friendMember).primaryRank
                     : 'member';
+                  const friendAvailability = resolveMemberAvailability(friendMember);
+                  const availabilityMeta = getAvailabilityMeta(friendAvailability);
                   const isMenuOpen = openFriendMenuId === rec.id;
                   const canDirectMessage = Boolean(
                     directMessagesEnabled && onDirectMessageFriend
@@ -1228,18 +1232,34 @@ export const RanksAndFriendsView: React.FC<RanksAndFriendsViewProps> = ({
                         }}
                         className="flex min-w-0 items-center gap-2.5 text-left"
                       >
-                        <MinecraftHeadAvatar
-                          avatarUrl={friendMember?.avatarUrl || friend.avatarUrl}
-                          username={friend.displayName}
-                          alt={`${friend.displayName} head`}
-                          initials={friend.displayName.slice(0, 2).toUpperCase()}
-                          className="h-8 w-8 shrink-0 rounded border border-zinc-700"
-                        />
+                        <div className="relative shrink-0">
+                          <MinecraftHeadAvatar
+                            avatarUrl={friendMember?.avatarUrl || friend.avatarUrl}
+                            username={friend.displayName}
+                            alt={`${friend.displayName} head`}
+                            initials={friend.displayName.slice(0, 2).toUpperCase()}
+                            className="h-8 w-8 rounded border border-zinc-700"
+                          />
+                          <span
+                            role="status"
+                            aria-label={`${friend.displayName} is ${availabilityMeta.label.toLowerCase()}`}
+                            title={availabilityMeta.label}
+                            data-status={friendAvailability}
+                            className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#0d0d12] ${availabilityMeta.dotClassName}`}
+                          />
+                        </div>
                         <div className="min-w-0">
                           <p className="truncate text-xs font-bold text-white hover:text-indigo-300">
                             {friend.displayName}
                           </p>
-                          <ServerRankBadge rankId={friendRank} size="xs" className="mt-0.5" />
+                          <div className="mt-0.5 flex items-center gap-1.5">
+                            <ServerRankBadge rankId={friendRank} size="xs" />
+                            <span
+                              className={`font-display-mono text-[10px] ${availabilityMeta.textClassName}`}
+                            >
+                              {availabilityMeta.label}
+                            </span>
+                          </div>
                         </div>
                       </button>
 

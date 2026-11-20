@@ -451,10 +451,18 @@ async function measureTcpRttMs(rawHost: string, defaultPort = 25565): Promise<nu
 }
 
 let FIREBASE_API_KEY = '';
+let FIREBASE_PROJECT_ID = '';
+let FIREBASE_DB_ID = '';
 try {
   const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-  const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as { apiKey?: string };
+  const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as {
+    apiKey?: string;
+    projectId?: string;
+    firestoreDatabaseId?: string;
+  };
   FIREBASE_API_KEY = parsed.apiKey || '';
+  FIREBASE_PROJECT_ID = parsed.projectId || '';
+  FIREBASE_DB_ID = parsed.firestoreDatabaseId || '';
 } catch {
   FIREBASE_API_KEY = '';
 }
@@ -464,7 +472,10 @@ const STATE_COOKIE_NAME = 'swx_oauth_state';
 const SESSION_SECRET =
   process.env.SESSION_SECRET && process.env.SESSION_SECRET.trim().length >= 16
     ? process.env.SESSION_SECRET.trim()
-    : crypto.randomBytes(32).toString('hex');
+    : crypto
+        .createHmac('sha256', 'swxstudios-shield-and-session-key-v1')
+        .update(`${FIREBASE_PROJECT_ID}|${FIREBASE_API_KEY}|${FIREBASE_DB_ID}|${process.cwd()}`)
+        .digest('hex');
 
 function extractArchiveExtensionServer(fileName: string): string | null {
   const lower = fileName.trim().toLowerCase();
@@ -664,21 +675,41 @@ function readOAuthSession(req: Request): OAuthSessionData {
   return { primaryProvider: null, connections: {} };
 }
 
-function writeOAuthSession(res: Response, session: OAuthSessionData): void {
-  res.cookie(SESSION_COOKIE_NAME, signToken(session), {
+function isHttpsRequest(req: Request | undefined): boolean {
+  if (!req) return false;
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  return Boolean(req.secure || forwardedProto === 'https');
+}
+
+function writeCookieProtocolSafe(
+  res: Response,
+  name: string,
+  value: string,
+  maxAgeMs: number
+): void {
+  const isHttps = isHttpsRequest(res.req);
+  res.cookie(name, value, {
     httpOnly: true,
-    secure: true,
-    sameSite: 'none',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    secure: isHttps,
+    sameSite: isHttps ? 'none' : 'lax',
+    maxAge: maxAgeMs,
     path: '/',
   });
 }
 
+function writeOAuthSession(res: Response, session: OAuthSessionData): void {
+  writeCookieProtocolSafe(res, SESSION_COOKIE_NAME, signToken(session), 7 * 24 * 60 * 60 * 1000);
+}
+
 function clearCookieIframeSafe(res: Response, name: string): void {
+  const isHttps = isHttpsRequest(res.req);
   res.clearCookie(name, {
     httpOnly: true,
-    secure: true,
-    sameSite: 'none',
+    secure: isHttps,
+    sameSite: isHttps ? 'none' : 'lax',
     path: '/',
   });
 }
@@ -899,20 +930,49 @@ async function exchangeTwitchCode(config: ProviderConfig, code: string, redirect
 
 async function createApp() {
   const app = express();
+  app.disable('x-powered-by');
   app.set('trust proxy', 1);
+
+  // Block direct HTTP access to internal config, rules, and leftover asset paths
+  app.use((req: Request, res: Response, next) => {
+    const reqPath = req.path.toLowerCase();
+    if (
+      reqPath === '/metadata.json' ||
+      reqPath === '/security_spec.md' ||
+      reqPath === '/firebase-blueprint.json' ||
+      reqPath === '/firestore.rules' ||
+      reqPath === '/draft_firestore.rules' ||
+      reqPath === '/package.json' ||
+      reqPath === '/package-lock.json' ||
+      reqPath === '/bun.lock' ||
+      reqPath === '/tsconfig.json' ||
+      reqPath.startsWith('/.aistudio') ||
+      reqPath.startsWith('/.env') ||
+      reqPath.startsWith('/assets/aistudio')
+    ) {
+      res.status(404).type('text/plain').send('Not Found');
+      return;
+    }
+    next();
+  });
+
   app.use(express.json());
 
   const BOT_VERIFY_COOKIE_NAME = 'swx_human_verified';
 
-  // 0. Cloudflare-Style Turnstile Bot Verification Routes (HMAC cookie + proof-of-work)
+  // 0. SwxShield Bot Verification Routes (HMAC cookie/header + proof-of-work)
   app.get('/api/verify/status', (req: Request, res: Response) => {
     const cookies = parseCookies(req.headers.cookie);
+    const headerTokenRaw = req.headers['x-swx-verify-token'];
+    const headerToken = typeof headerTokenRaw === 'string' ? headerTokenRaw.trim() : undefined;
+    const candidateToken = cookies[BOT_VERIFY_COOKIE_NAME] || headerToken;
+
     const session = verifyToken<{
       verified: boolean;
       rayId: string;
       verifiedAt: string;
       exp: number;
-    }>(cookies[BOT_VERIFY_COOKIE_NAME]);
+    }>(candidateToken);
 
     if (session && session.verified && typeof session.exp === 'number' && Date.now() < session.exp) {
       res.json({
@@ -997,13 +1057,7 @@ async function createApp() {
       exp: expiresAt,
     });
 
-    res.cookie(BOT_VERIFY_COOKIE_NAME, sessionToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      maxAge: 24 * 60 * 60 * 1000,
-      path: '/',
-    });
+    writeCookieProtocolSafe(res, BOT_VERIFY_COOKIE_NAME, sessionToken, 24 * 60 * 60 * 1000);
 
     res.json({
       ok: true,
@@ -1011,6 +1065,7 @@ async function createApp() {
       rayId: parsedChallenge.rayId,
       verifiedAt,
       expiresAt,
+      verificationToken: sessionToken,
     });
   });
 

@@ -73,6 +73,7 @@ import {
   CategoryId,
   CommunityThread,
   ConnectedAccountInfo,
+  FriendAvailabilityStatus,
   FriendshipRecord,
   LiveServerStatus,
   MembershipOrder,
@@ -104,7 +105,11 @@ import {
   mergeConnectedAccounts,
   resolveDisplayIdentity,
 } from './utils/authLogic';
-import { generateRayId } from './utils/botVerifyLogic';
+import {
+  generateRayId,
+  SWX_SHIELD_TOKEN_STORAGE_KEY,
+  verifyLocalShieldToken,
+} from './utils/botVerifyLogic';
 import {
   applyUserRating,
   buildResourceManifest,
@@ -153,6 +158,7 @@ import {
 import {
   buildDeterministicFriendshipId,
   categorizeFriendships,
+  isValidPresenceStatus,
   isValidServerRankId,
   RANKS_FRIENDS_LIMITS,
   sanitizeServerRolesList,
@@ -160,6 +166,23 @@ import {
 } from './utils/ranksAndFriendsLogic';
 
 const STORAGE_KEY = 'swxstudios_state_v2';
+
+function toIsoTimestampString(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (
+    value &&
+    typeof value === 'object' &&
+    'toDate' in value &&
+    typeof (value as { toDate?: unknown }).toDate === 'function'
+  ) {
+    try {
+      return (value as { toDate: () => Date }).toDate().toISOString();
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
 
 const DEFAULT_SITE_SETTINGS: SiteSettings = {
   announcementVisible: true,
@@ -419,7 +442,7 @@ export default function App() {
     return () => unsubAuth();
   }, [fetchOAuthSession]);
 
-  // Verify human security checkpoint cookie on boot
+  // Verify human security checkpoint cookie / token on boot
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
@@ -429,19 +452,58 @@ export default function App() {
       }
     }
 
+    let storedToken: string | null = null;
+    if (typeof window !== 'undefined') {
+      try {
+        storedToken = window.localStorage.getItem(SWX_SHIELD_TOKEN_STORAGE_KEY);
+      } catch {
+        storedToken = null;
+      }
+    }
+
     let cancelled = false;
-    fetch('/api/verify/status', { credentials: 'include', cache: 'no-store' })
+    const headers: Record<string, string> = {};
+    if (storedToken) {
+      headers['X-Swx-Verify-Token'] = storedToken;
+    }
+
+    fetch('/api/verify/status', {
+      credentials: 'include',
+      cache: 'no-store',
+      headers,
+    })
       .then(async (res) => {
-        if (!res.ok) throw new Error('status error');
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        if (!res.ok || !ct.includes('application/json')) {
+          throw new Error('non-json status');
+        }
         return (await res.json()) as { verified?: boolean; rayId?: string };
       })
       .then((data) => {
         if (cancelled) return;
         if (data.rayId) setVerifyRayId(data.rayId);
-        setBotVerifyStatus(data.verified ? 'verified' : 'required');
+        if (data.verified) {
+          setBotVerifyStatus('verified');
+          return;
+        }
+        if (typeof window !== 'undefined') {
+          try {
+            window.localStorage.removeItem(SWX_SHIELD_TOKEN_STORAGE_KEY);
+          } catch {
+            // Ignore storage errors
+          }
+        }
+        setBotVerifyStatus('required');
       })
       .catch(() => {
-        if (!cancelled) setBotVerifyStatus('required');
+        if (cancelled) return;
+        const localCheck = verifyLocalShieldToken(storedToken);
+        if (localCheck.valid) {
+          if (localCheck.rayId) setVerifyRayId(localCheck.rayId);
+          setBotVerifyStatus('verified');
+          return;
+        }
+        setBotVerifyStatus('required');
       });
 
     return () => {
@@ -575,12 +637,14 @@ export default function App() {
           });
           await setDoc(publicMemberRef, {
             ...sanitized,
+            presenceStatus: 'online',
             joinedAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
         } else if (isCurrentOwnerUser && publicSnap.data()?.role !== 'owner') {
           await updateDoc(publicMemberRef, {
             role: 'owner',
+            presenceStatus: 'online',
             updatedAt: serverTimestamp(),
           });
         }
@@ -1185,7 +1249,7 @@ export default function App() {
       (snap) => {
         const list: PublicMemberProfile[] = [];
         snap.forEach((docSnap) => {
-          const d = docSnap.data() as Partial<PublicMemberProfile>;
+          const d = docSnap.data() as Partial<PublicMemberProfile> & { updatedAt?: unknown };
           if (!d.displayName) return;
           list.push({
             uid: docSnap.id,
@@ -1201,6 +1265,10 @@ export default function App() {
                 ? d.membershipTier
                 : 'free',
             xp: typeof d.xp === 'number' ? d.xp : 0,
+            presenceStatus: isValidPresenceStatus(d.presenceStatus)
+              ? d.presenceStatus
+              : undefined,
+            updatedAt: toIsoTimestampString(d.updatedAt),
           });
         });
         setPublicMembers(list);
@@ -1211,6 +1279,43 @@ export default function App() {
     );
     return () => unsub();
   }, [authReady]);
+
+  // Sync live availability presence (online / away) for verified signed-in user
+  useEffect(() => {
+    if (!authReady || !firebaseUser?.emailVerified || !isValidFirestoreId(firebaseUser.uid)) {
+      return;
+    }
+    const uid = firebaseUser.uid;
+    const syncPresence = (nextStatus: FriendAvailabilityStatus) => {
+      void updateDoc(doc(db, 'publicMembers', uid), {
+        presenceStatus: nextStatus,
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    };
+
+    const currentStatus: FriendAvailabilityStatus =
+      typeof document !== 'undefined' && document.visibilityState === 'hidden' ? 'away' : 'online';
+    syncPresence(currentStatus);
+
+    const handleVisibilityChange = () => {
+      syncPresence(document.visibilityState === 'hidden' ? 'away' : 'online');
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
+
+    const intervalId = window.setInterval(() => {
+      syncPresence(document.visibilityState === 'hidden' ? 'away' : 'online');
+    }, 3 * 60 * 1000);
+
+    return () => {
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
+      window.clearInterval(intervalId);
+    };
+  }, [authReady, firebaseUser]);
 
   // Listen to current verified user's friendships and friend requests
   useEffect(() => {
@@ -1800,6 +1905,12 @@ export default function App() {
   };
 
   const handleSignOutAll = async () => {
+    if (auth.currentUser?.emailVerified && isValidFirestoreId(auth.currentUser.uid)) {
+      await updateDoc(doc(db, 'publicMembers', auth.currentUser.uid), {
+        presenceStatus: 'offline',
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    }
     await Promise.allSettled([
       signOut(auth),
       fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }),
@@ -3285,7 +3396,7 @@ export default function App() {
                     Most downloaded
                   </h2>
                   <p className="mt-0.5 text-xs text-zinc-400">
-                    Popular plugins and server setups this week.
+                    Top downloaded plugins and server setups.
                   </p>
                 </div>
               </div>
@@ -3320,7 +3431,7 @@ export default function App() {
                 className="flex w-full items-center justify-between gap-4 rounded-md border border-dashed border-zinc-800 bg-[#0c0c10] px-4 py-3 text-left text-xs text-zinc-400 transition-colors hover:border-zinc-700 hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
               >
                 <span>
-                  Sponsored placement available for server hosts and studios
+                  Advertise your server or hosting here
                 </span>
                 <span className="font-display-mono shrink-0 font-semibold text-zinc-200 tabular-nums">
                   $3.00 / wk
@@ -3471,7 +3582,7 @@ export default function App() {
                     Server utilities &amp; calculators
                   </h2>
                   <p className="mt-0.5 text-xs text-zinc-400">
-                    {TOOL_DIRECTORY.length} interactive Minecraft tools: MOTD &amp; Text Font generators, Command builder, Seed map, JAR scanner, Skin viewer, and Spark analyzer.
+                    {TOOL_DIRECTORY.length} Minecraft tools: MOTD &amp; font makers, command builder, seed map, JAR scanner, skin viewer, and Spark analyzer.
                   </p>
                 </div>
 
@@ -3529,7 +3640,7 @@ export default function App() {
                     Featured servers
                   </h2>
                   <p className="mt-0.5 text-xs text-zinc-400">
-                    Community-submitted and studio-verified Java, Bedrock, and Crossplay servers.
+                    Java, Bedrock, and Crossplay servers with live ping and player counts.
                   </p>
                 </div>
 
@@ -3857,6 +3968,13 @@ export default function App() {
         onOpenSponsor={() => setSponsorOpen(true)}
         verifyRayId={verifyRayId}
         onResetBotVerify={async () => {
+          if (typeof window !== 'undefined') {
+            try {
+              window.localStorage.removeItem(SWX_SHIELD_TOKEN_STORAGE_KEY);
+            } catch {
+              // Ignore storage errors
+            }
+          }
           try {
             await fetch('/api/verify/reset', { method: 'POST', credentials: 'include' });
           } catch {

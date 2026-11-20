@@ -47,7 +47,7 @@ export const ExclusiveView: React.FC<ExclusiveViewProps> = ({
             Premium &amp; Ultimate Setups, Plugins &amp; Source
           </h1>
           <p className="mt-1 max-w-2xl text-sm text-zinc-400">
-            Tested builds and clean repository archives reserved for Premium and Ultimate members.
+            Builds, setups, and source packs for Premium and Ultimate members.
           </p>
         </div>
 

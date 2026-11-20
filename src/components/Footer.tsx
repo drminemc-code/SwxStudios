@@ -21,8 +21,8 @@ export const Footer: React.FC<FooterProps> = ({
         <div>
           <div className="flex items-center gap-2.5">
             <img
-              src="/assets/aistudio/Gemini_Generated_Image_m1vgo5m1vgo5m1vg_2bbe67cb.jpeg"
-              alt="SwaxtuMC Studios logo"
+              src="/assets/brand/swx-emblem.jpg"
+              alt="SwxStudios logo"
               className="h-9 w-9 shrink-0 rounded-md border border-zinc-800 bg-black object-cover"
             />
             <span className="text-sm font-extrabold tracking-wider text-white uppercase">
@@ -30,7 +30,7 @@ export const Footer: React.FC<FooterProps> = ({
             </span>
           </div>
           <p className="mt-1.5 text-xs text-zinc-500">
-            Minecraft server plugins, models, configs, and verified setups.
+            Minecraft plugins, maps, configs, and server tools.
           </p>
         </div>
 
@@ -51,7 +51,7 @@ export const Footer: React.FC<FooterProps> = ({
             Ranks &amp; Friends
           </button>
           <button type="button" onClick={() => onSelectTab('stats')} className="hover:text-rose-300">
-            Studio Stats
+            Site Stats
           </button>
           <button type="button" onClick={() => onSelectTab('guides')} className="hover:text-rose-300">
             Guides

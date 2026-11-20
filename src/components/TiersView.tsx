@@ -399,7 +399,7 @@ export const TiersView: React.FC<TiersViewProps> = ({
                 <Medal className="h-4 w-4" aria-hidden="true" />
               </span>
               <h1 className="font-display text-xl sm:text-2xl font-extrabold tracking-tight text-white">
-                Combat PvP Tier Ledger
+                PvP Tier List
               </h1>
               {isOwner ? (
                 <span className="inline-flex items-center gap-1 rounded border border-amber-400/50 bg-amber-500/15 px-2 py-0.5 font-display-mono text-[10px] font-bold uppercase tracking-wider text-amber-300">
@@ -413,12 +413,12 @@ export const TiersView: React.FC<TiersViewProps> = ({
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 font-display-mono text-[10px] font-semibold uppercase tracking-wider text-zinc-400">
-                  <span>Public Standings</span>
+                  <span>Standings</span>
                 </span>
               )}
             </div>
             <p className="max-w-2xl text-xs sm:text-sm text-zinc-400">
-              Verified Minecraft 1.9+ combat rankings across 8 competitive kits. Players earn 1–60 points per tested tier from{' '}
+              Minecraft 1.9+ PvP rankings across 8 kits. Score 1–60 points per mode from{' '}
               <span className="font-display-mono text-zinc-300">LT5</span> up to{' '}
               <span className="font-display-mono text-amber-300">HT1</span>.
             </p>
@@ -439,13 +439,13 @@ export const TiersView: React.FC<TiersViewProps> = ({
                 </span>
               </div>
               <div className="pl-3">
-                <span className="text-zinc-500">Feed </span>
+                <span className="text-zinc-500">Status </span>
                 <span
                   className={`font-display-mono font-semibold ${
                     usingCloudData ? 'text-emerald-400' : 'text-zinc-400'
                   }`}
                 >
-                  {usingCloudData ? 'Cloud Live' : 'Cloud Ready'}
+                  {usingCloudData ? 'Live' : 'Saved'}
                 </span>
               </div>
             </div>
@@ -1013,7 +1013,7 @@ export const TiersView: React.FC<TiersViewProps> = ({
           <div className="space-y-1">
             <p className="text-sm font-bold text-white">0 ranked players yet</p>
             <p className="mx-auto max-w-md text-xs text-zinc-400">
-              No players or members have been added to the Combat PvP Tier Ledger yet. Owners and Tier Admins can add ranked players via{' '}
+              No ranked players added yet. Owners and Tier Admins can add players with{' '}
               <code className="font-display-mono text-amber-300">/tier set</code> or Quick Assign.
             </p>
           </div>
