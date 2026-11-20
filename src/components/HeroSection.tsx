@@ -5,6 +5,7 @@ import {
   CategoryId,
   LiveServerStatus,
   MinecraftServerListing,
+  ProbeRegionId,
   ResourceTierFilter,
 } from '../types';
 import { InteractiveHeroServerCard } from './MinecraftTextPreview';
@@ -28,6 +29,7 @@ interface HeroSectionProps {
   listedServersCount: number;
   featuredServers: MinecraftServerListing[];
   liveStatusMap: Record<string, LiveServerStatus>;
+  probeRegion?: ProbeRegionId;
   categoryCounts: Record<CategoryId, number>;
   tierCounts: Record<ResourceTierFilter, number>;
   onQueryChange: (value: string) => void;
@@ -51,6 +53,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
   listedServersCount,
   featuredServers,
   liveStatusMap,
+  probeRegion = 'asia',
   categoryCounts,
   tierCounts,
   onQueryChange,
@@ -180,6 +183,7 @@ export const HeroSection: React.FC<HeroSectionProps> = ({
             <InteractiveHeroServerCard
               featuredServers={featuredServers}
               liveStatusMap={liveStatusMap}
+              probeRegion={probeRegion}
               onRefreshServer={onRefreshServer}
               onOpenServers={onOpenServers}
               onOpenMotdTool={onOpenMotdTool}

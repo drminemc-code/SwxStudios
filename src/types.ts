@@ -13,6 +13,9 @@ export type NavTab =
   | 'home'
   | 'tools'
   | 'servers'
+  | 'tiers'
+  | 'ranks'
+  | 'stats'
   | 'guides'
   | 'community'
   | 'downloads'
@@ -58,12 +61,100 @@ export interface ResourceUpdateEntry {
   notes: string;
 }
 
+export type PaymentMethod = 'gcash' | 'paypal';
+
+export type MembershipOrderPlan = 'premium' | 'ultimate' | 'package';
+
+export type MembershipOrderStatus = 'pending' | 'approved' | 'declined';
+
+export interface MembershipOrder {
+  id: string;
+  userId: string;
+  buyerName: string;
+  plan: MembershipOrderPlan;
+  resourceId?: string;
+  resourceTitle?: string;
+  paymentMethod: PaymentMethod;
+  referenceCode: string;
+  senderAccount: string;
+  amountLabel: string;
+  status: MembershipOrderStatus;
+  adminNote?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface SiteSettings {
   announcementVisible: boolean;
   announcementLabel: string;
   announcementText: string;
   communityEnabled: boolean;
   heroHeadline?: string;
+  gcashNumber?: string;
+  gcashName?: string;
+  paypalEmail?: string;
+  paypalLink?: string;
+}
+
+export interface SiteMetricsState {
+  visits: number;
+  updatedAt?: string;
+}
+
+export type ServerRankId =
+  | 'owner'
+  | 'admin'
+  | 'staff'
+  | 'support'
+  | 'member'
+  | 'ultimate'
+  | 'paid'
+  | 'free';
+
+export interface PublicMemberProfile {
+  uid: string;
+  displayName: string;
+  avatarUrl?: string;
+  role: 'member' | 'admin' | 'owner';
+  serverRank?: ServerRankId;
+  serverRoles?: ServerRankId[];
+  membershipTier: MembershipTier;
+  xp: number;
+  joinedAt?: string;
+  updatedAt?: string;
+}
+
+export type FriendshipStatus = 'pending' | 'accepted' | 'declined' | 'blocked';
+
+export interface FriendshipRecord {
+  id: string;
+  users: [string, string];
+  requesterUid: string;
+  requesterName: string;
+  requesterAvatar?: string;
+  recipientUid: string;
+  recipientName: string;
+  recipientAvatar?: string;
+  status: FriendshipStatus;
+  blockedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type PlayerSuggestionStatus = 'pending' | 'approved' | 'declined';
+
+export interface PlayerSuggestionRecord {
+  id: string;
+  ign: string;
+  suggestedRank?: ServerRankId;
+  suggestedMode?: string;
+  note?: string;
+  suggestedBy: string;
+  suggestedByName: string;
+  status: PlayerSuggestionStatus;
+  reviewedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ResourceItem {
@@ -181,6 +272,8 @@ export interface DisplayIdentity {
 
 export type ServerEdition = 'Java' | 'Bedrock' | 'Crossplay';
 
+export type ProbeRegionId = 'asia' | 'global' | 'na' | 'eu';
+
 export interface LiveServerPlayerSample {
   uuid: string;
   name: string;
@@ -196,6 +289,8 @@ export interface LiveServerStatus {
   version?: string | null;
   software?: string | null;
   pingMs?: number | null;
+  probeRegion?: string;
+  probeLocation?: string;
   playersOnline: number;
   playersMax: number;
   playerSample?: LiveServerPlayerSample[];

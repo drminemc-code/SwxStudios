@@ -66,13 +66,16 @@ export const MinecraftHeadAvatar: React.FC<MinecraftHeadAvatarProps> = ({
   }
 
   const pixelated = cleanIgn.length > 0 || isMinecraftAvatarUrl(resolvedSrc);
+  const is3dHead = styleMode === '3d' || resolvedSrc.includes('style=3d');
 
   return (
     <img
       src={resolvedSrc}
       alt={alt}
       onError={() => setFailed(true)}
-      className={`${pixelated ? 'mc-pixelated' : ''} object-cover ${className}`}
+      className={`${pixelated ? 'mc-pixelated' : ''} ${
+        is3dHead ? 'object-contain p-0.5' : 'object-cover'
+      } ${className}`}
     />
   );
 };

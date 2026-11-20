@@ -26,6 +26,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -35,6 +36,7 @@ import { AccountModal } from './components/AccountModal';
 import { AdminPanelView } from './components/AdminPanelView';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
 import { AuthModal } from './components/AuthModal';
+import { BotVerifyGate } from './components/BotVerifyWidget';
 import { CommandSearchModal } from './components/CommandSearchModal';
 import { CommunityView } from './components/CommunityView';
 import { DownloadsView } from './components/DownloadsView';
@@ -45,10 +47,13 @@ import { HeroSection } from './components/HeroSection';
 import { LevelsView } from './components/LevelsView';
 import { Navbar, WorkspaceSidebar } from './components/Navbar';
 import { PremiumModal } from './components/PremiumModal';
+import { RanksAndFriendsView } from './components/RanksAndFriendsView';
 import { ResourceCard } from './components/ResourceCard';
 import { ResourceModal } from './components/ResourceModal';
 import { ServersView } from './components/ServersView';
+import { SiteStatsHomeStrip, SiteStatsView } from './components/SiteStatsView';
 import { SponsorModal } from './components/SponsorModal';
+import { TiersView } from './components/TiersView';
 import { TOOL_DIRECTORY, ToolsView, type ToolId } from './components/ToolsView';
 import { CATEGORIES, INITIAL_RESOURCES, INITIAL_THREADS } from './data/catalog';
 import { BASELINE_LIVE_SERVERS } from './data/liveServers';
@@ -68,13 +73,21 @@ import {
   CategoryId,
   CommunityThread,
   ConnectedAccountInfo,
+  FriendshipRecord,
   LiveServerStatus,
+  MembershipOrder,
+  MembershipOrderPlan,
   MembershipTier,
   MinecraftServerListing,
   NavTab,
   OAuthProviderStatus,
+  PaymentMethod,
+  PlayerSuggestionRecord,
+  ProbeRegionId,
+  PublicMemberProfile,
   ResourceItem,
   ResourceTierFilter,
+  ServerRankId,
   ServerTelemetrySnapshot,
   SiteSettings,
 } from './types';
@@ -91,6 +104,7 @@ import {
   mergeConnectedAccounts,
   resolveDisplayIdentity,
 } from './utils/authLogic';
+import { generateRayId } from './utils/botVerifyLogic';
 import {
   applyUserRating,
   buildResourceManifest,
@@ -101,7 +115,49 @@ import {
   getEffectiveResourceTier,
   pickRandomResource,
 } from './utils/catalogLogic';
-import { buildServerRecord, type ServerDraftInput } from './utils/mcToolsLogic';
+import {
+  buildServerRecord,
+  filterActiveServerListings,
+  resolveProbeRegionInfo,
+  type ServerDraftInput,
+} from './utils/mcToolsLogic';
+import {
+  buildMembershipOrderId,
+  buildMembershipOrderRecord,
+  canSelfSwitchTier,
+  PAYMENT_BLUEPRINT_LIMITS,
+  resolveApprovedTierUpdate,
+  validateMembershipOrderInput,
+} from './utils/paymentLogic';
+import {
+  calculateTierPoints,
+  canExecuteTierCommand,
+  normalizeTierPlayerId,
+  normalizeTierRegion,
+  parseTierCommand,
+  pickHigherTierRank,
+  sanitizeRanksMap,
+  TIER_BLUEPRINT_LIMITS,
+  type TierAdminRecord,
+  type TierCommandLogEntry,
+  type TierModeId,
+  type TierPlayerRecord,
+  type TierRank,
+  type TierRanksMap,
+  type TierRegion,
+} from './utils/tiersLogic';
+import {
+  buildStudioStatsOverview,
+  sanitizePublicMemberFields,
+} from './utils/siteStatsLogic';
+import {
+  buildDeterministicFriendshipId,
+  categorizeFriendships,
+  isValidServerRankId,
+  RANKS_FRIENDS_LIMITS,
+  sanitizeServerRolesList,
+  validatePlayerSuggestionInput,
+} from './utils/ranksAndFriendsLogic';
 
 const STORAGE_KEY = 'swxstudios_state_v2';
 
@@ -112,6 +168,10 @@ const DEFAULT_SITE_SETTINGS: SiteSettings = {
     'Free, Paid, Popular, Premium, and Ultimate releases verified for Minecraft servers.',
   communityEnabled: true,
   heroHeadline: '',
+  gcashNumber: '',
+  gcashName: 'SwxStudios Owner',
+  paypalEmail: 'randellemupas@gmail.com',
+  paypalLink: '',
 };
 
 interface PersistedState {
@@ -133,23 +193,14 @@ function loadInitialState(): PersistedState {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<PersistedState>;
       if (Array.isArray(parsed.resources)) {
-        const legacyPremium = Boolean(parsed.isPremium);
-        const resolvedMembership: MembershipTier =
-          parsed.membershipTier === 'ultimate' ||
-          parsed.membershipTier === 'premium' ||
-          parsed.membershipTier === 'free'
-            ? parsed.membershipTier
-            : legacyPremium
-            ? 'premium'
-            : 'free';
         return {
           resources: parsed.resources,
           threads: Array.isArray(parsed.threads) ? parsed.threads : INITIAL_THREADS,
           downloadedIds: Array.isArray(parsed.downloadedIds) ? parsed.downloadedIds : [],
           bookmarkedIds: Array.isArray(parsed.bookmarkedIds) ? parsed.bookmarkedIds : [],
-          purchasedIds: Array.isArray(parsed.purchasedIds) ? parsed.purchasedIds : [],
-          isPremium: resolvedMembership !== 'free',
-          membershipTier: resolvedMembership,
+          purchasedIds: [],
+          isPremium: false,
+          membershipTier: 'free',
           xp: typeof parsed.xp === 'number' ? parsed.xp : 0,
           threadsCreatedCount:
             typeof parsed.threadsCreatedCount === 'number' ? parsed.threadsCreatedCount : 0,
@@ -217,10 +268,21 @@ export default function App() {
   const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [premiumOpen, setPremiumOpen] = useState(false);
+  const [pendingPurchaseResource, setPendingPurchaseResource] = useState<ResourceItem | null>(null);
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signin');
   const [accountModalOpen, setAccountModalOpen] = useState(false);
+
+  // Cloudflare-style Turnstile bot verification checkpoint
+  const [botVerifyStatus, setBotVerifyStatus] = useState<'checking' | 'required' | 'verified'>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('autostart') === '1') return 'verified';
+    }
+    return 'checking';
+  });
+  const [verifyRayId, setVerifyRayId] = useState<string>(() => generateRayId('swx'));
 
   // Firebase Auth + 3P OAuth state
   const [authReady, setAuthReady] = useState(false);
@@ -233,13 +295,32 @@ export default function App() {
     Partial<Record<'discord' | 'github' | 'twitch', ConnectedAccountInfo>>
   >({});
   const [primaryOAuthProfile, setPrimaryOAuthProfile] = useState<ConnectedAccountInfo | null>(null);
+  const [preferredMcAvatarUrl, setPreferredMcAvatarUrl] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      return window.localStorage.getItem('swx_preferred_mc_avatar');
+    } catch {
+      return null;
+    }
+  });
   const [firestoreConnections, setFirestoreConnections] = useState<
     Partial<Record<AuthProviderId, ConnectedAccountInfo>>
   >({});
   const [cloudThreads, setCloudThreads] = useState<CommunityThread[]>([]);
   const [cloudResources, setCloudResources] = useState<ResourceItem[]>([]);
   const [cloudServers, setCloudServers] = useState<MinecraftServerListing[]>([]);
+  const [membershipOrders, setMembershipOrders] = useState<MembershipOrder[]>([]);
+  const [cloudTierPlayers, setCloudTierPlayers] = useState<TierPlayerRecord[]>([]);
+  const [tierAdmins, setTierAdmins] = useState<TierAdminRecord[]>([]);
+  const [selfIsTierAdmin, setSelfIsTierAdmin] = useState(false);
+  const [tierCommandLogs, setTierCommandLogs] = useState<TierCommandLogEntry[]>([]);
+  const [siteVisits, setSiteVisits] = useState<number>(0);
+  const [metricsSynced, setMetricsSynced] = useState(false);
+  const [publicMembers, setPublicMembers] = useState<PublicMemberProfile[]>([]);
+  const [friendships, setFriendships] = useState<FriendshipRecord[]>([]);
+  const [playerSuggestions, setPlayerSuggestions] = useState<PlayerSuggestionRecord[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
+  const [probeRegion, setProbeRegion] = useState<ProbeRegionId>('asia');
   const [liveStatusMap, setLiveStatusMap] = useState<Record<string, LiveServerStatus>>({});
   const [telemetryMap, setTelemetryMap] = useState<Record<string, ServerTelemetrySnapshot>>({});
   const [siteSettings, setSiteSettings] = useState<SiteSettings>(DEFAULT_SITE_SETTINGS);
@@ -338,6 +419,36 @@ export default function App() {
     return () => unsubAuth();
   }, [fetchOAuthSession]);
 
+  // Verify human security checkpoint cookie on boot
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('autostart') === '1') {
+        setBotVerifyStatus('verified');
+        return;
+      }
+    }
+
+    let cancelled = false;
+    fetch('/api/verify/status', { credentials: 'include', cache: 'no-store' })
+      .then(async (res) => {
+        if (!res.ok) throw new Error('status error');
+        return (await res.json()) as { verified?: boolean; rayId?: string };
+      })
+      .then((data) => {
+        if (cancelled) return;
+        if (data.rayId) setVerifyRayId(data.rayId);
+        setBotVerifyStatus(data.verified ? 'verified' : 'required');
+      })
+      .catch(() => {
+        if (!cancelled) setBotVerifyStatus('required');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Listen for OAuth popup completion messages
   useEffect(() => {
     const onMessage = async (event: MessageEvent) => {
@@ -397,6 +508,12 @@ export default function App() {
   useEffect(() => {
     if (!authReady || !firebaseUser || !firebaseUser.emailVerified) {
       setFirestoreConnections({});
+      setMembershipOrders([]);
+      setState((prev) =>
+        prev.isPremium || prev.membershipTier !== 'free' || prev.purchasedIds.length > 0
+          ? { ...prev, isPremium: false, membershipTier: 'free', purchasedIds: [] }
+          : prev
+      );
       return;
     }
 
@@ -417,7 +534,9 @@ export default function App() {
             uid,
             displayName: clampString(fallbackName, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'SwxMember',
             xp: Math.max(0, Math.min(1000000, state.xp)),
-            isPremium: state.isPremium,
+            isPremium: false,
+            membershipTier: 'free',
+            purchasedIds: [],
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           };
@@ -431,6 +550,37 @@ export default function App() {
           await setDoc(privateDocRef, {
             uid,
             email: clampString(firebaseUser.email, BLUEPRINT_LIMITS.EMAIL_MAX),
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        // Sync zero-PII public member/staff roster entry
+        const publicMemberRef = doc(db, 'publicMembers', uid);
+        const publicSnap = await getDoc(publicMemberRef);
+        const isCurrentOwnerUser = isOwnerAccount(
+          firebaseUser.email,
+          Boolean(firebaseUser.emailVerified)
+        );
+        const fallbackPublicName =
+          firebaseUser.displayName ||
+          (firebaseUser.email ? firebaseUser.email.split('@')[0] : 'SwxMember');
+        if (!publicSnap.exists()) {
+          const sanitized = sanitizePublicMemberFields({
+            uid,
+            displayName: fallbackPublicName,
+            avatarUrl: firebaseUser.photoURL,
+            role: isCurrentOwnerUser ? 'owner' : 'member',
+            membershipTier: 'free',
+            xp: state.xp,
+          });
+          await setDoc(publicMemberRef, {
+            ...sanitized,
+            joinedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else if (isCurrentOwnerUser && publicSnap.data()?.role !== 'owner') {
+          await updateDoc(publicMemberRef, {
+            role: 'owner',
             updatedAt: serverTimestamp(),
           });
         }
@@ -452,22 +602,37 @@ export default function App() {
       userDocRef,
       (snap) => {
         if (!snap.exists()) return;
-        const data = snap.data() as { xp?: number; isPremium?: boolean };
-        setState((prev) => {
-          const nextIsPremium =
-            typeof data.isPremium === 'boolean' ? data.isPremium : prev.isPremium;
-          const nextTier: MembershipTier = !nextIsPremium
-            ? 'free'
-            : prev.membershipTier === 'ultimate'
+        const data = snap.data() as {
+          xp?: number;
+          isPremium?: boolean;
+          membershipTier?: MembershipTier;
+          purchasedIds?: string[];
+        };
+        const cloudIsPremium = Boolean(data.isPremium);
+        const cloudTier: MembershipTier =
+          data.membershipTier === 'ultimate'
             ? 'ultimate'
-            : 'premium';
-          return {
-            ...prev,
-            xp: typeof data.xp === 'number' ? Math.max(prev.xp, data.xp) : prev.xp,
-            isPremium: nextIsPremium,
-            membershipTier: nextTier,
-          };
-        });
+            : data.membershipTier === 'premium' || cloudIsPremium
+            ? 'premium'
+            : 'free';
+        const cloudPurchasedIds = Array.isArray(data.purchasedIds)
+          ? data.purchasedIds.filter((id): id is string => typeof id === 'string')
+          : [];
+        const isCurrentOwner = isOwnerAccount(
+          firebaseUser.email,
+          Boolean(firebaseUser.emailVerified)
+        );
+        setState((prev) => ({
+          ...prev,
+          xp: typeof data.xp === 'number' ? Math.max(prev.xp, data.xp) : prev.xp,
+          isPremium: isCurrentOwner ? prev.isPremium || cloudIsPremium : cloudIsPremium,
+          membershipTier: isCurrentOwner
+            ? prev.membershipTier !== 'free'
+              ? prev.membershipTier
+              : cloudTier
+            : cloudTier,
+          purchasedIds: cloudPurchasedIds,
+        }));
       },
       (error) => {
         handleFirestoreError(error, OperationType.GET, `users/${uid}`);
@@ -661,6 +826,16 @@ export default function App() {
               ? d.communityEnabled
               : DEFAULT_SITE_SETTINGS.communityEnabled,
           heroHeadline: typeof d.heroHeadline === 'string' ? d.heroHeadline : '',
+          gcashNumber: typeof d.gcashNumber === 'string' ? d.gcashNumber : '',
+          gcashName:
+            typeof d.gcashName === 'string' && d.gcashName.trim()
+              ? d.gcashName
+              : DEFAULT_SITE_SETTINGS.gcashName,
+          paypalEmail:
+            typeof d.paypalEmail === 'string' && d.paypalEmail.trim()
+              ? d.paypalEmail
+              : DEFAULT_SITE_SETTINGS.paypalEmail,
+          paypalLink: typeof d.paypalLink === 'string' ? d.paypalLink : '',
         });
       },
       (error) => {
@@ -719,8 +894,9 @@ export default function App() {
             }
           : null,
         primaryOAuth: primaryOAuthProfile,
+        preferredMcAvatarUrl,
       }),
-    [firebaseUser, primaryOAuthProfile]
+    [firebaseUser, primaryOAuthProfile, preferredMcAvatarUrl]
   );
 
   const isOwner = useMemo(
@@ -774,6 +950,350 @@ export default function App() {
     return () => unsub();
   }, [authReady, isOwner]);
 
+  // Listen to GCash & PayPal membership orders (own orders for members; all orders for Owner)
+  useEffect(() => {
+    if (!authReady || !firebaseUser?.emailVerified) {
+      setMembershipOrders([]);
+      return;
+    }
+    const ordersQuery = isOwner
+      ? query(collection(db, 'membershipOrders'), limit(60))
+      : query(
+          collection(db, 'membershipOrders'),
+          where('userId', '==', firebaseUser.uid),
+          limit(25)
+        );
+    const unsub = onSnapshot(
+      ordersQuery,
+      (snap) => {
+        const items: MembershipOrder[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as Partial<MembershipOrder> & {
+            createdAt?: { toMillis?: () => number };
+          };
+          if (!d.userId || !d.referenceCode) return;
+          items.push({
+            id: docSnap.id,
+            userId: d.userId,
+            buyerName: d.buyerName || 'SwxMember',
+            plan: d.plan === 'ultimate' || d.plan === 'package' ? d.plan : 'premium',
+            resourceId: typeof d.resourceId === 'string' ? d.resourceId : undefined,
+            resourceTitle: typeof d.resourceTitle === 'string' ? d.resourceTitle : undefined,
+            paymentMethod: d.paymentMethod === 'paypal' ? 'paypal' : 'gcash',
+            referenceCode: d.referenceCode,
+            senderAccount: d.senderAccount || '',
+            amountLabel: d.amountLabel || '',
+            status:
+              d.status === 'approved' || d.status === 'declined' ? d.status : 'pending',
+            adminNote: typeof d.adminNote === 'string' ? d.adminNote : undefined,
+            createdAt:
+              typeof d.createdAt?.toMillis === 'function'
+                ? String(d.createdAt.toMillis())
+                : undefined,
+          });
+        });
+        items.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+        setMembershipOrders(items);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'membershipOrders');
+      }
+    );
+    return () => unsub();
+  }, [authReady, firebaseUser, isOwner]);
+
+  // Listen to Competitive PvP Tier List players (public read)
+  useEffect(() => {
+    if (!authReady) return;
+    const tierPlayersQuery = query(collection(db, 'tierPlayers'), limit(200));
+    const unsub = onSnapshot(
+      tierPlayersQuery,
+      (snap) => {
+        const items: TierPlayerRecord[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as Record<string, unknown>;
+          if (typeof d.ign !== 'string' || !d.ign.trim()) return;
+          const ranks = sanitizeRanksMap(d.ranks);
+          const peakRanks = sanitizeRanksMap(d.peakRanks);
+          const region = normalizeTierRegion(typeof d.region === 'string' ? d.region : 'NA') ?? 'NA';
+          items.push({
+            id: docSnap.id,
+            ign: d.ign,
+            region,
+            ranks,
+            peakRanks: Object.keys(peakRanks).length > 0 ? peakRanks : undefined,
+            points: typeof d.points === 'number' ? d.points : calculateTierPoints(ranks),
+            updatedBy: typeof d.updatedBy === 'string' ? d.updatedBy : undefined,
+            updatedByName: typeof d.updatedByName === 'string' ? d.updatedByName : undefined,
+          });
+        });
+        setCloudTierPlayers(items);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'tierPlayers');
+      }
+    );
+    return () => unsub();
+  }, [authReady]);
+
+  // Check whether current verified user holds Tier Admin status
+  useEffect(() => {
+    if (!authReady || !firebaseUser?.emailVerified) {
+      setSelfIsTierAdmin(false);
+      return;
+    }
+    const adminRef = doc(db, 'tierAdmins', firebaseUser.uid);
+    const unsub = onSnapshot(
+      adminRef,
+      (snap) => {
+        setSelfIsTierAdmin(snap.exists());
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, `tierAdmins/${firebaseUser.uid}`);
+      }
+    );
+    return () => unsub();
+  }, [authReady, firebaseUser]);
+
+  // Owner listens to full Tier Admin roster
+  useEffect(() => {
+    if (!authReady || !isOwner) {
+      setTierAdmins([]);
+      return;
+    }
+    const adminsQuery = query(collection(db, 'tierAdmins'), limit(100));
+    const unsub = onSnapshot(
+      adminsQuery,
+      (snap) => {
+        const list: TierAdminRecord[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as Partial<TierAdminRecord>;
+          if (!d.uid) return;
+          list.push({
+            uid: d.uid,
+            displayName: d.displayName || 'Tier Admin',
+            grantedBy: d.grantedBy || '',
+            grantedByName: d.grantedByName,
+          });
+        });
+        setTierAdmins(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'tierAdmins');
+      }
+    );
+    return () => unsub();
+  }, [authReady, isOwner]);
+
+  // Owner & Tier Admins listen to Tier Command Audit Log
+  useEffect(() => {
+    if (!authReady || (!isOwner && !selfIsTierAdmin)) {
+      setTierCommandLogs([]);
+      return;
+    }
+    const logsQuery = query(collection(db, 'tierCommands'), orderBy('createdAt', 'desc'), limit(40));
+    const unsub = onSnapshot(
+      logsQuery,
+      (snap) => {
+        const list: TierCommandLogEntry[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as Partial<TierCommandLogEntry> & {
+            createdAt?: { toMillis?: () => number };
+          };
+          if (!d.commandText || !d.action) return;
+          list.push({
+            id: docSnap.id,
+            commandText: d.commandText,
+            action: d.action,
+            executorUid: d.executorUid || '',
+            executorName: d.executorName || 'Staff',
+            executorRole: d.executorRole === 'owner' ? 'owner' : 'admin',
+            summary: d.summary || d.commandText,
+            createdAt:
+              typeof d.createdAt?.toMillis === 'function'
+                ? String(d.createdAt.toMillis())
+                : undefined,
+          });
+        });
+        setTierCommandLogs(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'tierCommands');
+      }
+    );
+    return () => unsub();
+  }, [authReady, isOwner, selfIsTierAdmin]);
+
+  // Listen to public studio visit metrics & record 1 visit per browser session
+  useEffect(() => {
+    if (!authReady) return;
+    const metricsRef = doc(db, 'metrics', 'site');
+    const unsub = onSnapshot(
+      metricsRef,
+      (snap) => {
+        setMetricsSynced(true);
+        if (snap.exists()) {
+          const data = snap.data() as { visits?: unknown };
+          if (typeof data.visits === 'number' && Number.isFinite(data.visits)) {
+            setSiteVisits(Math.max(0, Math.floor(data.visits)));
+          }
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, 'metrics/site');
+      }
+    );
+
+    const recordVisit = async () => {
+      try {
+        if (typeof window !== 'undefined' && window.sessionStorage.getItem('swx_visit_recorded') === '1') {
+          return;
+        }
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(metricsRef);
+          if (!snap.exists()) {
+            tx.set(metricsRef, {
+              visits: 1,
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            const current = Number(snap.data()?.visits) || 0;
+            tx.update(metricsRef, {
+              visits: current + 1,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        });
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.setItem('swx_visit_recorded', '1');
+        }
+      } catch {
+        // Non-fatal if offline or throttled
+      }
+    };
+
+    void recordVisit();
+    return () => unsub();
+  }, [authReady]);
+
+  // Listen to zero-PII public members & staff roster
+  useEffect(() => {
+    if (!authReady) return;
+    const membersQuery = query(collection(db, 'publicMembers'), limit(200));
+    const unsub = onSnapshot(
+      membersQuery,
+      (snap) => {
+        const list: PublicMemberProfile[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as Partial<PublicMemberProfile>;
+          if (!d.displayName) return;
+          list.push({
+            uid: docSnap.id,
+            displayName: d.displayName,
+            avatarUrl: typeof d.avatarUrl === 'string' ? d.avatarUrl : undefined,
+            role: d.role === 'owner' || d.role === 'admin' ? d.role : 'member',
+            serverRank: isValidServerRankId(d.serverRank) ? d.serverRank : undefined,
+            serverRoles: Array.isArray(d.serverRoles)
+              ? sanitizeServerRolesList(d.serverRoles)
+              : undefined,
+            membershipTier:
+              d.membershipTier === 'ultimate' || d.membershipTier === 'premium'
+                ? d.membershipTier
+                : 'free',
+            xp: typeof d.xp === 'number' ? d.xp : 0,
+          });
+        });
+        setPublicMembers(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'publicMembers');
+      }
+    );
+    return () => unsub();
+  }, [authReady]);
+
+  // Listen to current verified user's friendships and friend requests
+  useEffect(() => {
+    if (!authReady || !firebaseUser?.emailVerified) {
+      setFriendships([]);
+      return;
+    }
+    const friendsQuery = query(
+      collection(db, 'friendships'),
+      where('users', 'array-contains', firebaseUser.uid),
+      limit(150)
+    );
+    const unsub = onSnapshot(
+      friendsQuery,
+      (snap) => {
+        const list: FriendshipRecord[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as Partial<FriendshipRecord>;
+          if (!Array.isArray(d.users) || d.users.length !== 2 || !d.requesterUid || !d.recipientUid) {
+            return;
+          }
+          list.push({
+            id: docSnap.id,
+            users: [d.users[0], d.users[1]],
+            requesterUid: d.requesterUid,
+            requesterName: d.requesterName || 'Member',
+            requesterAvatar: typeof d.requesterAvatar === 'string' ? d.requesterAvatar : undefined,
+            recipientUid: d.recipientUid,
+            recipientName: d.recipientName || 'Member',
+            recipientAvatar: typeof d.recipientAvatar === 'string' ? d.recipientAvatar : undefined,
+            status:
+              d.status === 'accepted' || d.status === 'declined' || d.status === 'blocked'
+                ? d.status
+                : 'pending',
+            blockedBy: typeof d.blockedBy === 'string' ? d.blockedBy : undefined,
+          });
+        });
+        setFriendships(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'friendships');
+      }
+    );
+    return () => unsub();
+  }, [authReady, firebaseUser]);
+
+  // Listen to community "Suggest Add This Player" queue
+  useEffect(() => {
+    if (!authReady) return;
+    const suggestionsQuery = query(
+      collection(db, 'playerSuggestions'),
+      orderBy('createdAt', 'desc'),
+      limit(80)
+    );
+    const unsub = onSnapshot(
+      suggestionsQuery,
+      (snap) => {
+        const list: PlayerSuggestionRecord[] = [];
+        snap.forEach((docSnap) => {
+          const d = docSnap.data() as Partial<PlayerSuggestionRecord>;
+          if (!d.ign || !d.suggestedBy) return;
+          list.push({
+            id: docSnap.id,
+            ign: d.ign,
+            suggestedRank: isValidServerRankId(d.suggestedRank) ? d.suggestedRank : undefined,
+            suggestedMode: typeof d.suggestedMode === 'string' ? d.suggestedMode : undefined,
+            note: typeof d.note === 'string' ? d.note : undefined,
+            suggestedBy: d.suggestedBy,
+            suggestedByName: d.suggestedByName || 'Member',
+            status:
+              d.status === 'approved' || d.status === 'declined' ? d.status : 'pending',
+            reviewedBy: typeof d.reviewedBy === 'string' ? d.reviewedBy : undefined,
+          });
+        });
+        setPlayerSuggestions(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'playerSuggestions');
+      }
+    );
+    return () => unsub();
+  }, [authReady]);
+
   // Fetch server telemetry snapshots (TPS / MSPT / Avg Ping / Top Players)
   useEffect(() => {
     fetch('/api/mc/telemetry')
@@ -789,20 +1309,24 @@ export default function App() {
   }, []);
 
   const allDirectoryServers = useMemo(() => {
+    const activeCloudServers = filterActiveServerListings(cloudServers);
     const existingAddresses = new Set(
-      cloudServers.map((s) => s.address.trim().toLowerCase())
+      activeCloudServers.map((s) => s.address.trim().toLowerCase())
     );
     const baselineExtras = BASELINE_LIVE_SERVERS.filter(
       (b) => !existingAddresses.has(b.address.trim().toLowerCase())
     );
-    return [...cloudServers, ...baselineExtras];
+    return [...activeCloudServers, ...baselineExtras];
   }, [cloudServers]);
 
   const checkServerLiveStatus = useCallback(
-    async (srv: MinecraftServerListing, fresh = false) => {
+    async (srv: MinecraftServerListing, fresh = false, regionOverride?: ProbeRegionId) => {
       if (!srv.address) return;
       if (liveInFlightRef.current.has(srv.id) && !fresh) return;
       liveInFlightRef.current.add(srv.id);
+
+      const targetRegion = regionOverride || probeRegion;
+      const regionMeta = resolveProbeRegionInfo(targetRegion);
 
       setLiveStatusMap((prev) => ({
         ...prev,
@@ -815,7 +1339,7 @@ export default function App() {
       const apiEdition = srv.edition === 'Bedrock' ? 'bedrock' : 'java';
       try {
         const res = await fetch(
-          `/api/mc/status?host=${encodeURIComponent(srv.address.trim())}&edition=${apiEdition}${
+          `/api/mc/status?host=${encodeURIComponent(srv.address.trim())}&edition=${apiEdition}&region=${encodeURIComponent(targetRegion)}${
             fresh ? '&fresh=1' : ''
           }`
         );
@@ -828,6 +1352,8 @@ export default function App() {
           version?: string | null;
           software?: string | null;
           pingMs?: number | null;
+          probeRegion?: string;
+          probeLocation?: string;
           playersOnline?: number;
           playersMax?: number;
           playerSample?: Array<{ uuid: string; name: string }>;
@@ -843,6 +1369,8 @@ export default function App() {
             [srv.id]: {
               loading: false,
               online: false,
+              probeRegion: targetRegion,
+              probeLocation: regionMeta.label,
               playersOnline: 0,
               playersMax: 0,
               error: data.error || 'Could not reach server',
@@ -863,6 +1391,8 @@ export default function App() {
             version: data.version ?? null,
             software: data.software ?? null,
             pingMs: typeof data.pingMs === 'number' ? data.pingMs : null,
+            probeRegion: data.probeRegion || targetRegion,
+            probeLocation: data.probeLocation || regionMeta.label,
             playersOnline: typeof data.playersOnline === 'number' ? data.playersOnline : 0,
             playersMax: typeof data.playersMax === 'number' ? data.playersMax : 0,
             playerSample: Array.isArray(data.playerSample) ? data.playerSample : [],
@@ -877,6 +1407,8 @@ export default function App() {
           [srv.id]: {
             loading: false,
             online: false,
+            probeRegion: targetRegion,
+            probeLocation: regionMeta.label,
             playersOnline: 0,
             playersMax: 0,
             error: 'Status check failed',
@@ -886,7 +1418,7 @@ export default function App() {
         liveInFlightRef.current.delete(srv.id);
       }
     },
-    []
+    [probeRegion]
   );
 
   const refreshAllServersLive = useCallback(
@@ -902,15 +1434,46 @@ export default function App() {
 
   const activeThreads = cloudThreads.length > 0 ? cloudThreads : state.threads;
   const activeResources = cloudResources;
-  const approvedServers = useMemo(
+  const approvedServers = useMemo(() => {
+    const priorityOrder = ['donutsmp.net', 'mcpvp.club', 'acersmp.xyz', 'mc.hypixel.net'];
+    return allDirectoryServers
+      .filter((s) => s.approved)
+      .sort((a, b) => {
+        if (a.featured !== b.featured) return a.featured ? -1 : 1;
+        const aPrio = priorityOrder.indexOf(a.address.trim().toLowerCase());
+        const bPrio = priorityOrder.indexOf(b.address.trim().toLowerCase());
+        if (aPrio !== -1 || bPrio !== -1) {
+          if (aPrio === -1) return 1;
+          if (bPrio === -1) return -1;
+          return aPrio - bPrio;
+        }
+        return b.votes - a.votes;
+      });
+  }, [allDirectoryServers]);
+
+  const studioStatsOverview = useMemo(
     () =>
-      allDirectoryServers
-        .filter((s) => s.approved)
-        .sort((a, b) => {
-          if (a.featured !== b.featured) return a.featured ? -1 : 1;
-          return b.votes - a.votes;
-        }),
-    [allDirectoryServers]
+      buildStudioStatsOverview({
+        visits: siteVisits,
+        publicMembers,
+        tierAdmins,
+        resources: activeResources,
+        servers: approvedServers,
+        liveStatusMap,
+        tierPlayers: cloudTierPlayers,
+        threads: activeThreads,
+        toolsCount: TOOL_DIRECTORY.length,
+      }),
+    [
+      siteVisits,
+      publicMembers,
+      tierAdmins,
+      activeResources,
+      approvedServers,
+      liveStatusMap,
+      cloudTierPlayers,
+      activeThreads,
+    ]
   );
 
   // Auto-ping Homepage Featured Servers once when visible
@@ -974,7 +1537,6 @@ export default function App() {
   const persistUserMetrics = useCallback(
     async (updates: {
       xp?: number;
-      isPremium?: boolean;
       displayName?: string;
       avatarUrl?: string;
     }) => {
@@ -985,6 +1547,19 @@ export default function App() {
           ...updates,
           updatedAt: serverTimestamp(),
         });
+        const publicUpdates: Record<string, unknown> = {
+          updatedAt: serverTimestamp(),
+        };
+        if (typeof updates.xp === 'number') {
+          publicUpdates.xp = Math.max(0, Math.min(1000000, Math.round(updates.xp)));
+        }
+        if (typeof updates.displayName === 'string' && updates.displayName.trim()) {
+          publicUpdates.displayName = clampString(updates.displayName, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX);
+        }
+        if (typeof updates.avatarUrl === 'string' && updates.avatarUrl.trim()) {
+          publicUpdates.avatarUrl = clampString(updates.avatarUrl, BLUEPRINT_LIMITS.URL_MAX);
+        }
+        await updateDoc(doc(db, 'publicMembers', uid), publicUpdates).catch(() => {});
       } catch (error) {
         handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
       }
@@ -992,25 +1567,47 @@ export default function App() {
     []
   );
 
+  const openPremiumModal = useCallback((resource?: ResourceItem | null) => {
+    setPendingPurchaseResource(resource ?? null);
+    setPremiumOpen(true);
+  }, []);
+
+  const savePreferredMcAvatar = useCallback((avatarUrl?: string | null) => {
+    const clean = avatarUrl ? clampString(avatarUrl, BLUEPRINT_LIMITS.URL_MAX) : '';
+    setPreferredMcAvatarUrl(clean || null);
+    if (typeof window !== 'undefined') {
+      try {
+        if (clean) {
+          window.localStorage.setItem('swx_preferred_mc_avatar', clean);
+        } else {
+          window.localStorage.removeItem('swx_preferred_mc_avatar');
+        }
+      } catch {
+        // Ignore storage failure
+      }
+    }
+    return clean;
+  }, []);
+
   // Auth Actions
   const handleEmailSignIn = async (
     email: string,
     password: string,
-    mcAvatarUrl?: string | null
+    mcAvatarUrl?: string | null,
+    forceAvatar = false
   ) => {
     try {
       const cred = await signInWithEmailAndPassword(auth, email, password);
-      if (mcAvatarUrl) {
-        const cleanAvatar = clampString(mcAvatarUrl, BLUEPRINT_LIMITS.URL_MAX);
-        if (cleanAvatar) {
-          await updateProfile(cred.user, { photoURL: cleanAvatar });
-          setAuthVersion((v) => v + 1);
-          if (cred.user.emailVerified) {
-            void updateDoc(doc(db, 'users', cred.user.uid), {
-              avatarUrl: cleanAvatar,
-              updatedAt: serverTimestamp(),
-            }).catch(() => {});
-          }
+      const cleanAvatar = mcAvatarUrl ? clampString(mcAvatarUrl, BLUEPRINT_LIMITS.URL_MAX) : '';
+      if (cleanAvatar && (forceAvatar || !cred.user.photoURL)) {
+        savePreferredMcAvatar(cleanAvatar);
+        await updateProfile(cred.user, { photoURL: cleanAvatar });
+        setAuthVersion((v) => v + 1);
+        if (cred.user.emailVerified) {
+          void updateDoc(doc(db, 'users', cred.user.uid), {
+            avatarUrl: cleanAvatar,
+            updatedAt: serverTimestamp(),
+          }).catch(() => {});
         }
       }
       showToast(
@@ -1033,6 +1630,9 @@ export default function App() {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       const cleanName = clampString(displayName, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX);
       const cleanAvatar = mcAvatarUrl ? clampString(mcAvatarUrl, BLUEPRINT_LIMITS.URL_MAX) : '';
+      if (cleanAvatar) {
+        savePreferredMcAvatar(cleanAvatar);
+      }
       await updateProfile(cred.user, {
         displayName: cleanName,
         ...(cleanAvatar ? { photoURL: cleanAvatar } : {}),
@@ -1053,17 +1653,40 @@ export default function App() {
     }
   };
 
-  const handleFirebaseProviderAuth = async (providerId: 'google' | 'microsoft') => {
+  const handleFirebaseProviderAuth = async (
+    providerId: 'google' | 'microsoft',
+    mcAvatarUrl?: string | null,
+    forceAvatar = false
+  ) => {
     const provider = providerId === 'google' ? googleProvider : microsoftProvider;
     try {
       const cred = await signInWithPopup(auth, provider);
+      const cleanAvatar = mcAvatarUrl ? clampString(mcAvatarUrl, BLUEPRINT_LIMITS.URL_MAX) : '';
+      if (cleanAvatar && (forceAvatar || !cred.user.photoURL)) {
+        savePreferredMcAvatar(cleanAvatar);
+        await updateProfile(cred.user, { photoURL: cleanAvatar });
+        setAuthVersion((v) => v + 1);
+        if (cred.user.emailVerified) {
+          void updateDoc(doc(db, 'users', cred.user.uid), {
+            avatarUrl: cleanAvatar,
+            updatedAt: serverTimestamp(),
+          }).catch(() => {});
+        }
+      }
       showToast(`Signed in as ${cred.user.displayName || cred.user.email || providerId}`);
     } catch (error) {
       throw new Error(mapFirebaseAuthError(error));
     }
   };
 
-  const handleOAuthPopupAuth = async (provider: 'discord' | 'github' | 'twitch') => {
+  const handleOAuthPopupAuth = async (
+    provider: 'discord' | 'github' | 'twitch',
+    mcAvatarUrl?: string | null,
+    forceAvatar = false
+  ) => {
+    if (mcAvatarUrl && (forceAvatar || !preferredMcAvatarUrl)) {
+      savePreferredMcAvatar(mcAvatarUrl);
+    }
     const res = await fetch(`/api/oauth/${provider}/url`, { credentials: 'include' });
     const data = (await res.json()) as {
       url?: string;
@@ -1181,6 +1804,7 @@ export default function App() {
       signOut(auth),
       fetch('/api/auth/logout', { method: 'POST', credentials: 'include' }),
     ]);
+    savePreferredMcAvatar(null);
     setOauthConnections({});
     setPrimaryOAuthProfile(null);
     setFirestoreConnections({});
@@ -1194,12 +1818,17 @@ export default function App() {
       purchasedIds: state.purchasedIds,
     });
 
-    if (!unlocked && (effectiveTier === 'premium' || effectiveTier === 'ultimate')) {
-      setPremiumOpen(true);
+    if (!unlocked) {
+      openPremiumModal(resource);
+      showToast(
+        effectiveTier === 'ultimate'
+          ? 'Ultimate required — Buy via GCash or PayPal to unlock.'
+          : effectiveTier === 'paid'
+          ? `Paid release (${resource.priceLabel || '$4.99'}) — Buy via GCash or PayPal to unlock.`
+          : 'Premium required — Buy via GCash or PayPal to unlock.'
+      );
       return;
     }
-
-    const newlyUnlockedPaid = !unlocked && effectiveTier === 'paid';
 
     try {
       if (resource.downloadUrl) {
@@ -1230,9 +1859,6 @@ export default function App() {
     const nextXp = state.xp + xpGain;
     setState((prev) => ({
       ...prev,
-      purchasedIds: newlyUnlockedPaid
-        ? [resource.id, ...prev.purchasedIds]
-        : prev.purchasedIds,
       downloadedIds: prev.downloadedIds.includes(resource.id)
         ? prev.downloadedIds
         : [resource.id, ...prev.downloadedIds],
@@ -1242,11 +1868,7 @@ export default function App() {
       downloads: (resource.downloads || 0) + 1,
     }).catch(() => {});
     void persistUserMetrics({ xp: nextXp }).catch(() => {});
-    showToast(
-      newlyUnlockedPaid
-        ? `Unlocked ${resource.priceLabel || 'Paid'} build — downloading ${resource.fileName || resource.title} (+${xpGain} XP)`
-        : `Downloaded ${resource.fileName || resource.title} (+${xpGain} XP)`
-    );
+    showToast(`Downloaded ${resource.fileName || resource.title} (+${xpGain} XP)`);
   };
 
   const handleToggleBookmark = (resourceId: string) => {
@@ -1448,6 +2070,22 @@ export default function App() {
           DEFAULT_SITE_SETTINGS.announcementText,
         communityEnabled: nextSettings.communityEnabled !== false,
         heroHeadline: clampString(nextSettings.heroHeadline || '', 120),
+        gcashNumber: clampString(
+          nextSettings.gcashNumber || '',
+          PAYMENT_BLUEPRINT_LIMITS.GCASH_NUMBER_MAX
+        ),
+        gcashName: clampString(
+          nextSettings.gcashName || '',
+          PAYMENT_BLUEPRINT_LIMITS.GCASH_NAME_MAX
+        ),
+        paypalEmail: clampString(
+          nextSettings.paypalEmail || '',
+          PAYMENT_BLUEPRINT_LIMITS.PAYPAL_EMAIL_MAX
+        ),
+        paypalLink: clampString(
+          nextSettings.paypalLink || '',
+          PAYMENT_BLUEPRINT_LIMITS.PAYPAL_LINK_MAX
+        ),
         updatedBy: auth.currentUser.uid,
         updatedAt: serverTimestamp(),
       });
@@ -1455,6 +2093,103 @@ export default function App() {
     } catch (error) {
       handleFirestoreError(error, OperationType.WRITE, 'settings/site');
       throw new Error('Could not save site controls to Firestore.');
+    }
+  };
+
+  const handleSubmitMembershipOrder = async (input: {
+    plan: MembershipOrderPlan;
+    paymentMethod: PaymentMethod;
+    referenceCode: string;
+    senderAccount: string;
+    resource?: ResourceItem | null;
+  }) => {
+    if (!auth.currentUser || !auth.currentUser.emailVerified) {
+      throw new Error('Please sign in and verify your email first.');
+    }
+    const validation = validateMembershipOrderInput(input);
+    if (!validation.ok) {
+      throw new Error(validation.error);
+    }
+    const orderId = buildMembershipOrderId(auth.currentUser.uid);
+    const record = buildMembershipOrderRecord({
+      orderId,
+      userId: auth.currentUser.uid,
+      buyerName: identity.displayName || 'SwxMember',
+      input,
+    });
+    try {
+      await setDoc(doc(db, 'membershipOrders', orderId), {
+        ...record,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      showToast(
+        `${input.paymentMethod === 'gcash' ? 'GCash' : 'PayPal'} payment submitted — pending owner verification.`
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `membershipOrders/${orderId}`);
+      throw new Error('Could not submit payment verification.');
+    }
+  };
+
+  const handleResolveMembershipOrder = async (
+    order: MembershipOrder,
+    decision: 'approved' | 'declined'
+  ) => {
+    if (!auth.currentUser || !isOwner) {
+      throw new Error('Only verified owners can approve or decline orders.');
+    }
+    try {
+      await updateDoc(doc(db, 'membershipOrders', order.id), {
+        status: decision,
+        updatedAt: serverTimestamp(),
+      });
+      if (decision === 'approved' && isValidFirestoreId(order.userId)) {
+        const userRef = doc(db, 'users', order.userId);
+        const snap = await getDoc(userRef);
+        if (snap.exists()) {
+          const userData = snap.data() as {
+            isPremium?: boolean;
+            membershipTier?: MembershipTier;
+            purchasedIds?: string[];
+          };
+          const currentTier: MembershipTier =
+            userData.membershipTier === 'ultimate'
+              ? 'ultimate'
+              : userData.membershipTier === 'premium' || userData.isPremium
+              ? 'premium'
+              : 'free';
+          const nextTierState = resolveApprovedTierUpdate(currentTier, order.plan);
+          const existingPurchased = Array.isArray(userData.purchasedIds)
+            ? userData.purchasedIds
+            : [];
+          const nextPurchased =
+            order.plan === 'package' &&
+            order.resourceId &&
+            !existingPurchased.includes(order.resourceId)
+              ? [order.resourceId, ...existingPurchased].slice(0, 200)
+              : existingPurchased;
+
+          await updateDoc(userRef, {
+            isPremium: nextTierState.isPremium,
+            membershipTier: nextTierState.membershipTier,
+            purchasedIds: nextPurchased,
+            updatedAt: serverTimestamp(),
+          });
+          await updateDoc(doc(db, 'publicMembers', order.userId), {
+            membershipTier: nextTierState.membershipTier,
+            updatedAt: serverTimestamp(),
+          }).catch(() => {});
+        }
+      }
+      showToast(
+        decision === 'approved'
+          ? `Approved ${order.buyerName}'s ${order.paymentMethod.toUpperCase()} order.`
+          : `Declined ${order.buyerName}'s order.`
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `membershipOrders/${order.id}`);
+      throw new Error('Could not update payment order status.');
     }
   };
 
@@ -1755,6 +2490,576 @@ export default function App() {
     showToast(`Updated live metrics for ${srv.name}.`);
   };
 
+  const logTierCommandExecution = useCallback(
+    async (params: { commandText: string; action: string; summary: string }) => {
+      if (!auth.currentUser || !auth.currentUser.emailVerified) return;
+      const commandId = `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      try {
+        await setDoc(doc(db, 'tierCommands', commandId), {
+          id: commandId,
+          commandText: clampString(params.commandText, TIER_BLUEPRINT_LIMITS.COMMAND_MAX),
+          action: clampString(params.action, 40),
+          executorUid: auth.currentUser.uid,
+          executorName:
+            clampString(identity.displayName, TIER_BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'Staff',
+          executorRole: isOwner ? 'owner' : 'admin',
+          summary: clampString(params.summary, TIER_BLUEPRINT_LIMITS.SUMMARY_MAX),
+          createdAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `tierCommands/${commandId}`);
+      }
+    },
+    [identity.displayName, isOwner]
+  );
+
+  const handleExecuteTierCommand = useCallback(
+    async (rawCommand: string): Promise<{ ok: boolean; message: string }> => {
+      const parsed = parseTierCommand(rawCommand);
+      if (!parsed.ok) {
+        return { ok: false, message: parsed.error };
+      }
+
+      const cmd = parsed.command;
+      if (cmd.type === 'help') {
+        return {
+          ok: true,
+          message:
+            'Commands: /tier set <ign> <mode> <HT1..LT5> [region] | /tier remove <ign> <mode> | /tier peak <ign> <mode> <rank> | /tier region <ign> <NA|EU|AS|OCE|SA> | /tier delete <ign> | /tier admin add/remove <uid> | /tier seed',
+        };
+      }
+
+      if (!auth.currentUser || !auth.currentUser.emailVerified) {
+        return { ok: false, message: 'Sign in with a verified account first.' };
+      }
+
+      const perm = canExecuteTierCommand(cmd, { isOwner, isTierAdmin: selfIsTierAdmin });
+      if (!perm.allowed) {
+        return { ok: false, message: perm.reason || 'Permission denied.' };
+      }
+
+      const actorUid = auth.currentUser.uid;
+      const actorName =
+        clampString(identity.displayName, TIER_BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'Staff';
+      const activeList = cloudTierPlayers;
+
+      const findExisting = (ign: string) => {
+        const lower = ign.trim().toLowerCase();
+        return activeList.find(
+          (p) => p.ign.toLowerCase() === lower || p.id === normalizeTierPlayerId(ign)
+        );
+      };
+
+      if (cmd.type === 'set') {
+        const existing = findExisting(cmd.ign);
+        const playerId = existing?.id || normalizeTierPlayerId(cmd.ign);
+        const nextRanks: TierRanksMap = { ...(existing?.ranks || {}), [cmd.mode]: cmd.rank };
+        const nextPeakRanks: TierRanksMap = { ...(existing?.peakRanks || {}) };
+        const bestPeak = pickHigherTierRank(nextPeakRanks[cmd.mode], cmd.rank);
+        if (bestPeak) nextPeakRanks[cmd.mode] = bestPeak;
+        const nextRegion: TierRegion = cmd.region || existing?.region || 'NA';
+        const nextPoints = calculateTierPoints(nextRanks);
+
+        const docRef = doc(db, 'tierPlayers', playerId);
+        try {
+          const snap = await getDoc(docRef);
+          const payload = {
+            id: playerId,
+            ign: clampString(existing?.ign || cmd.ign, TIER_BLUEPRINT_LIMITS.IGN_MAX),
+            region: nextRegion,
+            ranks: nextRanks,
+            peakRanks: nextPeakRanks,
+            points: nextPoints,
+            updatedBy: actorUid,
+            updatedByName: actorName,
+            updatedAt: serverTimestamp(),
+          };
+          if (snap.exists()) {
+            await updateDoc(docRef, payload);
+          } else {
+            await setDoc(docRef, { ...payload, createdAt: serverTimestamp() });
+          }
+          const summary = `Set ${payload.ign} ${cmd.mode} to ${cmd.rank} (${nextRegion}) · ${nextPoints} pts`;
+          await logTierCommandExecution({ commandText: rawCommand, action: 'set', summary });
+          showToast(summary);
+          return { ok: true, message: summary };
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `tierPlayers/${playerId}`);
+          return { ok: false, message: 'Failed to save tier rank update.' };
+        }
+      }
+
+      if (cmd.type === 'remove') {
+        const existing = findExisting(cmd.ign);
+        if (!existing) {
+          return { ok: false, message: `Player "${cmd.ign}" not found.` };
+        }
+        const playerId = existing.id;
+        const nextRanks: TierRanksMap = { ...existing.ranks };
+        delete nextRanks[cmd.mode];
+        const nextPoints = calculateTierPoints(nextRanks);
+        const docRef = doc(db, 'tierPlayers', playerId);
+        try {
+          const snap = await getDoc(docRef);
+          const payload = {
+            id: playerId,
+            ign: existing.ign,
+            region: existing.region,
+            ranks: nextRanks,
+            ...(existing.peakRanks ? { peakRanks: existing.peakRanks } : {}),
+            points: nextPoints,
+            updatedBy: actorUid,
+            updatedByName: actorName,
+            updatedAt: serverTimestamp(),
+          };
+          if (snap.exists()) {
+            await updateDoc(docRef, payload);
+          } else {
+            await setDoc(docRef, { ...payload, createdAt: serverTimestamp() });
+          }
+          const summary = `Cleared ${cmd.mode} rank for ${existing.ign} (${nextPoints} pts)`;
+          await logTierCommandExecution({ commandText: rawCommand, action: 'remove', summary });
+          showToast(summary);
+          return { ok: true, message: summary };
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, `tierPlayers/${playerId}`);
+          return { ok: false, message: 'Failed to remove mode tier.' };
+        }
+      }
+
+      if (cmd.type === 'peak') {
+        const existing = findExisting(cmd.ign);
+        if (!existing) {
+          return { ok: false, message: `Player "${cmd.ign}" not found.` };
+        }
+        const playerId = existing.id;
+        const nextPeakRanks: TierRanksMap = { ...(existing.peakRanks || {}), [cmd.mode]: cmd.rank };
+        const docRef = doc(db, 'tierPlayers', playerId);
+        try {
+          const snap = await getDoc(docRef);
+          const payload = {
+            id: playerId,
+            ign: existing.ign,
+            region: existing.region,
+            ranks: existing.ranks,
+            peakRanks: nextPeakRanks,
+            points: existing.points,
+            updatedBy: actorUid,
+            updatedByName: actorName,
+            updatedAt: serverTimestamp(),
+          };
+          if (snap.exists()) {
+            await updateDoc(docRef, payload);
+          } else {
+            await setDoc(docRef, { ...payload, createdAt: serverTimestamp() });
+          }
+          const summary = `Recorded peak ${cmd.mode} ${cmd.rank} for ${existing.ign}`;
+          await logTierCommandExecution({ commandText: rawCommand, action: 'peak', summary });
+          showToast(summary);
+          return { ok: true, message: summary };
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, `tierPlayers/${playerId}`);
+          return { ok: false, message: 'Failed to record peak tier.' };
+        }
+      }
+
+      if (cmd.type === 'region') {
+        const existing = findExisting(cmd.ign);
+        if (!existing) {
+          return { ok: false, message: `Player "${cmd.ign}" not found.` };
+        }
+        const playerId = existing.id;
+        const docRef = doc(db, 'tierPlayers', playerId);
+        try {
+          const snap = await getDoc(docRef);
+          const payload = {
+            id: playerId,
+            ign: existing.ign,
+            region: cmd.region,
+            ranks: existing.ranks,
+            ...(existing.peakRanks ? { peakRanks: existing.peakRanks } : {}),
+            points: existing.points,
+            updatedBy: actorUid,
+            updatedByName: actorName,
+            updatedAt: serverTimestamp(),
+          };
+          if (snap.exists()) {
+            await updateDoc(docRef, payload);
+          } else {
+            await setDoc(docRef, { ...payload, createdAt: serverTimestamp() });
+          }
+          const summary = `Updated region for ${existing.ign} to ${cmd.region}`;
+          await logTierCommandExecution({ commandText: rawCommand, action: 'region', summary });
+          showToast(summary);
+          return { ok: true, message: summary };
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, `tierPlayers/${playerId}`);
+          return { ok: false, message: 'Failed to update player region.' };
+        }
+      }
+
+      if (cmd.type === 'delete') {
+        const playerId = findExisting(cmd.ign)?.id || normalizeTierPlayerId(cmd.ign);
+        try {
+          await deleteDoc(doc(db, 'tierPlayers', playerId));
+          const summary = `Deleted ${cmd.ign} from Tier List`;
+          await logTierCommandExecution({ commandText: rawCommand, action: 'delete', summary });
+          showToast(summary);
+          return { ok: true, message: summary };
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, `tierPlayers/${playerId}`);
+          return { ok: false, message: 'Failed to delete player entry.' };
+        }
+      }
+
+      if (cmd.type === 'admin_add') {
+        try {
+          await setDoc(doc(db, 'tierAdmins', cmd.targetUid), {
+            uid: cmd.targetUid,
+            displayName: clampString(cmd.displayName, TIER_BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'Tier Admin',
+            grantedBy: actorUid,
+            grantedByName: actorName,
+            createdAt: serverTimestamp(),
+          });
+          const publicMemberRef = doc(db, 'publicMembers', cmd.targetUid);
+          const publicMemberSnap = await getDoc(publicMemberRef);
+          if (publicMemberSnap.exists()) {
+            await updateDoc(publicMemberRef, {
+              role: publicMemberSnap.data()?.role === 'owner' ? 'owner' : 'admin',
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+          } else {
+            const sanitizedAdmin = sanitizePublicMemberFields({
+              uid: cmd.targetUid,
+              displayName: cmd.displayName || 'Tier Admin',
+              role: 'admin',
+              membershipTier: 'free',
+              xp: 0,
+            });
+            await setDoc(publicMemberRef, {
+              ...sanitizedAdmin,
+              joinedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+          }
+          const summary = `Authorized Tier Admin ${cmd.displayName} (${cmd.targetUid})`;
+          await logTierCommandExecution({ commandText: rawCommand, action: 'admin_add', summary });
+          showToast(summary);
+          return { ok: true, message: summary };
+        } catch (error) {
+          handleFirestoreError(error, OperationType.CREATE, `tierAdmins/${cmd.targetUid}`);
+          return { ok: false, message: 'Failed to authorize Tier Admin.' };
+        }
+      }
+
+      if (cmd.type === 'admin_remove') {
+        try {
+          await deleteDoc(doc(db, 'tierAdmins', cmd.targetUid));
+          const publicMemberRef = doc(db, 'publicMembers', cmd.targetUid);
+          const publicMemberSnap = await getDoc(publicMemberRef);
+          if (publicMemberSnap.exists() && publicMemberSnap.data()?.role === 'admin') {
+            await updateDoc(publicMemberRef, {
+              role: 'member',
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+          }
+          const summary = `Revoked Tier Admin role for UID ${cmd.targetUid}`;
+          await logTierCommandExecution({ commandText: rawCommand, action: 'admin_remove', summary });
+          showToast(summary);
+          return { ok: true, message: summary };
+        } catch (error) {
+          handleFirestoreError(error, OperationType.DELETE, `tierAdmins/${cmd.targetUid}`);
+          return { ok: false, message: 'Failed to revoke Tier Admin.' };
+        }
+      }
+
+      if (cmd.type === 'seed') {
+        return {
+          ok: false,
+          message: 'Starter player seeding is disabled. Add real players using /tier set <ign> <mode> <HT1..LT5> [region].',
+        };
+      }
+
+      return { ok: false, message: 'Unsupported command.' };
+    },
+    [cloudTierPlayers, identity.displayName, isOwner, logTierCommandExecution, selfIsTierAdmin, showToast]
+  );
+
+  const handleQuickSetTier = useCallback(
+    async (params: {
+      ign: string;
+      mode: TierModeId;
+      rank: TierRank | 'REMOVE';
+      region: TierRegion;
+    }) => {
+      const cleanIgn = params.ign.trim();
+      if (params.rank === 'REMOVE') {
+        return handleExecuteTierCommand(`/tier remove ${cleanIgn} ${params.mode}`);
+      }
+      return handleExecuteTierCommand(
+        `/tier set ${cleanIgn} ${params.mode} ${params.rank} ${params.region}`
+      );
+    },
+    [handleExecuteTierCommand]
+  );
+
+  const handleGrantTierAdmin = useCallback(
+    async (uid: string, displayName: string) => {
+      const cleanUid = uid.trim();
+      const cleanName = displayName.trim() || 'Tier Admin';
+      return handleExecuteTierCommand(`/tier admin add ${cleanUid} ${cleanName}`);
+    },
+    [handleExecuteTierCommand]
+  );
+
+  const handleRevokeTierAdmin = useCallback(
+    async (uid: string) => {
+      return handleExecuteTierCommand(`/tier admin remove ${uid.trim()}`);
+    },
+    [handleExecuteTierCommand]
+  );
+
+  const pendingFriendRequestsCount = useMemo(
+    () => categorizeFriendships(friendships, firebaseUser?.uid).incomingRequests.length,
+    [friendships, firebaseUser?.uid]
+  );
+
+  const handleSendFriendRequest = useCallback(
+    async (target: PublicMemberProfile) => {
+      if (!auth.currentUser || !auth.currentUser.emailVerified) {
+        throw new Error('Sign in with a verified account to send friend requests.');
+      }
+      const pair = buildDeterministicFriendshipId(auth.currentUser.uid, target.uid);
+      if (!pair) {
+        throw new Error('Invalid recipient user ID.');
+      }
+      const existing = friendships.find((f) => f.id === pair.id);
+      if (existing?.status === 'blocked') {
+        throw new Error('Cannot send a friend request while this user is blocked.');
+      }
+      if (existing?.status === 'accepted') {
+        showToast(`Already friends with ${target.displayName}.`);
+        return;
+      }
+      if (existing?.status === 'pending') {
+        showToast(`Friend request already pending with ${target.displayName}.`);
+        return;
+      }
+      if (existing?.status === 'declined') {
+        await deleteDoc(doc(db, 'friendships', pair.id));
+      }
+      const payload: Record<string, unknown> = {
+        id: pair.id,
+        users: pair.users,
+        requesterUid: auth.currentUser.uid,
+        requesterName:
+          clampString(identity.displayName, RANKS_FRIENDS_LIMITS.DISPLAY_NAME_MAX) || 'SwxMember',
+        recipientUid: target.uid,
+        recipientName:
+          clampString(target.displayName, RANKS_FRIENDS_LIMITS.DISPLAY_NAME_MAX) || 'SwxMember',
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      if (identity.avatarUrl) {
+        payload.requesterAvatar = clampString(identity.avatarUrl, RANKS_FRIENDS_LIMITS.URL_MAX);
+      }
+      if (target.avatarUrl) {
+        payload.recipientAvatar = clampString(target.avatarUrl, RANKS_FRIENDS_LIMITS.URL_MAX);
+      }
+      try {
+        await setDoc(doc(db, 'friendships', pair.id), payload);
+        showToast(`Friend request sent to ${target.displayName}.`);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `friendships/${pair.id}`);
+        throw new Error('Could not send friend request.');
+      }
+    },
+    [friendships, identity.avatarUrl, identity.displayName, showToast]
+  );
+
+  const handleRespondFriendRequest = useCallback(
+    async (friendship: FriendshipRecord, decision: 'accepted' | 'declined') => {
+      if (!auth.currentUser || !auth.currentUser.emailVerified) {
+        throw new Error('Sign in with a verified account first.');
+      }
+      try {
+        await updateDoc(doc(db, 'friendships', friendship.id), {
+          status: decision,
+          updatedAt: serverTimestamp(),
+        });
+        showToast(
+          decision === 'accepted'
+            ? `Accepted friend request from ${friendship.requesterName}.`
+            : `Declined friend request from ${friendship.requesterName}.`
+        );
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `friendships/${friendship.id}`);
+        throw new Error('Could not update friend request.');
+      }
+    },
+    [showToast]
+  );
+
+  const handleRemoveFriendship = useCallback(
+    async (friendship: FriendshipRecord) => {
+      if (!auth.currentUser || !auth.currentUser.emailVerified) {
+        throw new Error('Sign in with a verified account first.');
+      }
+      try {
+        await deleteDoc(doc(db, 'friendships', friendship.id));
+        showToast(
+          friendship.status === 'blocked'
+            ? 'Player unblocked.'
+            : 'Friendship / request removed.'
+        );
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `friendships/${friendship.id}`);
+        throw new Error('Could not remove friendship.');
+      }
+    },
+    [showToast]
+  );
+
+  const handleBlockFriend = useCallback(
+    async (friendship: FriendshipRecord) => {
+      if (!auth.currentUser || !auth.currentUser.emailVerified) {
+        throw new Error('Sign in with a verified account first.');
+      }
+      const blockedName =
+        friendship.requesterUid === auth.currentUser.uid
+          ? friendship.recipientName
+          : friendship.requesterName;
+      try {
+        await updateDoc(doc(db, 'friendships', friendship.id), {
+          status: 'blocked',
+          blockedBy: auth.currentUser.uid,
+          updatedAt: serverTimestamp(),
+        });
+        showToast(`Blocked ${blockedName}.`);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `friendships/${friendship.id}`);
+        throw new Error('Could not block player.');
+      }
+    },
+    [showToast]
+  );
+
+  const handleSuggestPlayer = useCallback(
+    async (input: {
+      ign: string;
+      suggestedRank?: ServerRankId;
+      suggestedMode?: TierModeId | '';
+      note?: string;
+    }) => {
+      if (!auth.currentUser || !auth.currentUser.emailVerified) {
+        throw new Error('Sign in with a verified account to suggest a player.');
+      }
+      const validation = validatePlayerSuggestionInput(input);
+      if (!validation.ok) {
+        throw new Error(validation.error);
+      }
+      const suggestionId = `sug-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const payload: Record<string, unknown> = {
+        id: suggestionId,
+        ign: validation.ign,
+        suggestedBy: auth.currentUser.uid,
+        suggestedByName:
+          clampString(identity.displayName, RANKS_FRIENDS_LIMITS.DISPLAY_NAME_MAX) || 'SwxMember',
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      if (validation.suggestedRank) payload.suggestedRank = validation.suggestedRank;
+      if (validation.suggestedMode) payload.suggestedMode = validation.suggestedMode;
+      if (validation.note) payload.note = validation.note;
+
+      try {
+        await setDoc(doc(db, 'playerSuggestions', suggestionId), payload);
+        showToast(`Suggested adding player ${validation.ign}.`);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `playerSuggestions/${suggestionId}`);
+        throw new Error('Could not submit player suggestion.');
+      }
+    },
+    [identity.displayName, showToast]
+  );
+
+  const handleResolveSuggestion = useCallback(
+    async (
+      suggestion: PlayerSuggestionRecord,
+      decision: 'approved' | 'declined',
+      alsoAddToTierList = false
+    ) => {
+      if (!auth.currentUser || (!isOwner && !selfIsTierAdmin)) {
+        throw new Error('Only Owners or Tier Admins can review player suggestions.');
+      }
+      try {
+        await updateDoc(doc(db, 'playerSuggestions', suggestion.id), {
+          status: decision,
+          reviewedBy: auth.currentUser.uid,
+          updatedAt: serverTimestamp(),
+        });
+        if (decision === 'approved' && alsoAddToTierList && suggestion.suggestedMode) {
+          const alreadyListed = cloudTierPlayers.some(
+            (p) => p.ign.trim().toLowerCase() === suggestion.ign.trim().toLowerCase()
+          );
+          if (!alreadyListed) {
+            await handleExecuteTierCommand(
+              `/tier set ${suggestion.ign} ${suggestion.suggestedMode} LT5 NA`
+            );
+          }
+        }
+        showToast(
+          decision === 'approved'
+            ? `Approved player suggestion: ${suggestion.ign}.`
+            : `Declined player suggestion: ${suggestion.ign}.`
+        );
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `playerSuggestions/${suggestion.id}`);
+        throw new Error('Could not update player suggestion.');
+      }
+    },
+    [cloudTierPlayers, handleExecuteTierCommand, isOwner, selfIsTierAdmin, showToast]
+  );
+
+  const handleDeleteSuggestion = useCallback(
+    async (suggestionId: string) => {
+      if (!auth.currentUser || !auth.currentUser.emailVerified) {
+        throw new Error('Sign in with a verified account first.');
+      }
+      try {
+        await deleteDoc(doc(db, 'playerSuggestions', suggestionId));
+        showToast('Player suggestion removed.');
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `playerSuggestions/${suggestionId}`);
+        throw new Error('Could not delete player suggestion.');
+      }
+    },
+    [showToast]
+  );
+
+  const handleAssignMemberServerRoles = useCallback(
+    async (targetUid: string, serverRank: ServerRankId, serverRoles: ServerRankId[]) => {
+      if (!auth.currentUser || !isOwner) {
+        throw new Error('Only the verified Studio Owner can assign Discord server ranks.');
+      }
+      const cleanRoles = sanitizeServerRolesList([serverRank, ...serverRoles]);
+      try {
+        await updateDoc(doc(db, 'publicMembers', targetUid), {
+          serverRank,
+          serverRoles: cleanRoles,
+          updatedAt: serverTimestamp(),
+        });
+        showToast('Updated Discord server rank & roles.');
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `publicMembers/${targetUid}`);
+        throw new Error('Could not update member server roles.');
+      }
+    },
+    [isOwner, showToast]
+  );
+
   const openTool = (toolId: ToolId, mode: 'grid' | 'workbench' = 'workbench') => {
     setActiveToolId(toolId);
     setToolsViewMode(mode);
@@ -1784,6 +3089,30 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  if (botVerifyStatus === 'checking') {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#08080a] px-4 text-zinc-300">
+        <div className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-[#0d0d11] px-4 py-3 text-xs font-medium">
+          <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-600 border-t-rose-400" />
+          <span>Checking connection security...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (botVerifyStatus === 'required') {
+    return (
+      <BotVerifyGate
+        rayId={verifyRayId}
+        onPassed={({ rayId }) => {
+          setVerifyRayId(rayId);
+          setBotVerifyStatus('verified');
+          showToast('Connection verified by SwxShield.');
+        }}
+      />
+    );
+  }
+
   return (
     <div id="top" className="min-h-screen bg-[#08080a] text-zinc-100 flex flex-col">
       <Navbar
@@ -1794,7 +3123,7 @@ export default function App() {
         onCloseMobileDrawer={() => setMobileDrawerOpen(false)}
         onSelectTab={navigateTab}
         onOpenSearch={() => setSearchOpen(true)}
-        onOpenPremium={() => setPremiumOpen(true)}
+        onOpenPremium={() => openPremiumModal(null)}
         onOpenAuth={(mode = 'signin') => {
           setAuthModalMode(mode);
           setAuthModalOpen(true);
@@ -1805,6 +3134,7 @@ export default function App() {
         isPremium={state.isPremium}
         membershipTier={state.membershipTier}
         downloadCount={state.downloadedIds.length}
+        pendingFriendRequestsCount={pendingFriendRequestsCount}
       />
 
       <div className="flex flex-1 min-w-0">
@@ -1815,7 +3145,7 @@ export default function App() {
           onCloseMobile={() => setMobileDrawerOpen(false)}
           onSelectTab={navigateTab}
           onOpenSearch={() => setSearchOpen(true)}
-          onOpenPremium={() => setPremiumOpen(true)}
+          onOpenPremium={() => openPremiumModal(null)}
           onOpenAuth={(mode = 'signin') => {
             setAuthModalMode(mode);
             setAuthModalOpen(true);
@@ -1824,6 +3154,7 @@ export default function App() {
           identity={identity}
           isOwner={isOwner}
           downloadCount={state.downloadedIds.length}
+          pendingFriendRequestsCount={pendingFriendRequestsCount}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -1847,6 +3178,7 @@ export default function App() {
                   listedServersCount={approvedServers.length}
                   featuredServers={approvedServers.slice(0, 4)}
                   liveStatusMap={liveStatusMap}
+                  probeRegion={probeRegion}
                   categoryCounts={categoryCounts}
                   tierCounts={tierCounts}
                   onQueryChange={setHeroQuery}
@@ -1859,6 +3191,12 @@ export default function App() {
                   onRefreshServer={(srv) => void checkServerLiveStatus(srv, true)}
                   onOpenServers={() => navigateTab('servers')}
                   onOpenMotdTool={() => openTool('motd', 'workbench')}
+                />
+
+                <SiteStatsHomeStrip
+                  overview={studioStatsOverview}
+                  cloudConnected={metricsSynced}
+                  onOpenFullStats={() => navigateTab('stats')}
                 />
 
             {/* Active Search / Category Filter Results */}
@@ -2311,6 +3649,14 @@ export default function App() {
             servers={allDirectoryServers}
             liveStatusMap={liveStatusMap}
             telemetryMap={telemetryMap}
+            probeRegion={probeRegion}
+            onProbeRegionChange={(nextRegion) => {
+              setProbeRegion(nextRegion);
+              homePingTriggeredRef.current.clear();
+              void Promise.all(
+                allDirectoryServers.map((srv) => checkServerLiveStatus(srv, true, nextRegion))
+              );
+            }}
             canPost={Boolean(firebaseUser?.emailVerified)}
             isOwner={isOwner}
             currentUid={firebaseUser?.uid ?? null}
@@ -2335,7 +3681,87 @@ export default function App() {
           />
         )}
 
+        {activeTab === 'tiers' && (
+          <TiersView
+            players={cloudTierPlayers}
+            publicMembers={publicMembers}
+            tierAdmins={tierAdmins}
+            commandLogs={tierCommandLogs}
+            isOwner={isOwner}
+            isTierAdmin={selfIsTierAdmin}
+            isSignedIn={Boolean(firebaseUser)}
+            emailVerified={Boolean(firebaseUser?.emailVerified)}
+            currentUid={firebaseUser?.uid ?? null}
+            currentDisplayName={identity.displayName}
+            usingCloudData={cloudTierPlayers.length > 0}
+            onRequireAuth={() => {
+              if (firebaseUser && !firebaseUser.emailVerified) {
+                setAccountModalOpen(true);
+              } else {
+                setAuthModalMode('signin');
+                setAuthModalOpen(true);
+              }
+            }}
+            onOpenRanks={() => navigateTab('ranks')}
+            onExecuteCommand={handleExecuteTierCommand}
+            onQuickSetTier={handleQuickSetTier}
+            onGrantAdmin={handleGrantTierAdmin}
+            onRevokeAdmin={handleRevokeTierAdmin}
+          />
+        )}
+
+        {activeTab === 'ranks' && (
+          <RanksAndFriendsView
+            members={publicMembers}
+            tierAdmins={tierAdmins}
+            tierPlayers={cloudTierPlayers}
+            friendships={friendships}
+            suggestions={playerSuggestions}
+            isSignedIn={Boolean(firebaseUser)}
+            emailVerified={Boolean(firebaseUser?.emailVerified)}
+            isOwner={isOwner}
+            isTierAdmin={selfIsTierAdmin}
+            currentUid={firebaseUser?.uid ?? null}
+            currentDisplayName={identity.displayName}
+            onRequireAuth={() => {
+              if (firebaseUser && !firebaseUser.emailVerified) {
+                setAccountModalOpen(true);
+              } else {
+                setAuthModalMode('signin');
+                setAuthModalOpen(true);
+              }
+            }}
+            onSendFriendRequest={handleSendFriendRequest}
+            onRespondFriendRequest={handleRespondFriendRequest}
+            onRemoveFriendship={handleRemoveFriendship}
+            onBlockFriend={handleBlockFriend}
+            onSuggestPlayer={handleSuggestPlayer}
+            onResolveSuggestion={handleResolveSuggestion}
+            onDeleteSuggestion={handleDeleteSuggestion}
+            onAssignMemberServerRoles={handleAssignMemberServerRoles}
+            onOpenTiers={() => navigateTab('tiers')}
+          />
+        )}
+
         {activeTab === 'guides' && <GuidesView onNotify={showToast} />}
+
+        {activeTab === 'stats' && (
+          <SiteStatsView
+            overview={studioStatsOverview}
+            cloudConnected={metricsSynced}
+            isSignedIn={Boolean(firebaseUser)}
+            onSelectTab={navigateTab}
+            onOpenCategory={(cat) => openCategoryInDirectory(cat)}
+            onRequireAuth={() => {
+              if (firebaseUser && !firebaseUser.emailVerified) {
+                setAccountModalOpen(true);
+              } else {
+                setAuthModalMode('signin');
+                setAuthModalOpen(true);
+              }
+            }}
+          />
+        )}
 
         {activeTab === 'downloads' && (
           <DownloadsView
@@ -2361,7 +3787,7 @@ export default function App() {
             purchasedIds={state.purchasedIds}
             onSelectResource={handleOpenResourceDetail}
             onDownloadResource={handleDownloadResource}
-            onOpenPremium={() => setPremiumOpen(true)}
+            onOpenPremium={() => openPremiumModal(null)}
           />
         )}
 
@@ -2402,6 +3828,7 @@ export default function App() {
             resources={activeResources}
             threads={activeThreads}
             servers={cloudServers}
+            membershipOrders={membershipOrders}
             siteSettings={siteSettings}
             onRequireSignIn={() => {
               setAuthModalMode('signin');
@@ -2411,6 +3838,7 @@ export default function App() {
               setActiveTab('home');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
+            onOpenTiersConsole={() => navigateTab('tiers')}
             onUploadFile={handleAdminUploadFile}
             onPublishResource={handleAdminPublishResource}
             onDeleteResource={handleAdminDeleteResource}
@@ -2419,6 +3847,7 @@ export default function App() {
             onDeleteThread={handleAdminDeleteThread}
             onUpdateServerFlags={handleUpdateServerFlags}
             onDeleteServer={handleDeleteServer}
+            onResolveMembershipOrder={handleResolveMembershipOrder}
           />
         )}
       </main>
@@ -2426,6 +3855,16 @@ export default function App() {
       <Footer
         onSelectTab={navigateTab}
         onOpenSponsor={() => setSponsorOpen(true)}
+        verifyRayId={verifyRayId}
+        onResetBotVerify={async () => {
+          try {
+            await fetch('/api/verify/reset', { method: 'POST', credentials: 'include' });
+          } catch {
+            // Proceed to show challenge gate locally even on transient error
+          }
+          setVerifyRayId(generateRayId('swx-reset'));
+          setBotVerifyStatus('required');
+        }}
       />
         </div>
       </div>
@@ -2447,8 +3886,9 @@ export default function App() {
         onToggleBookmark={handleToggleBookmark}
         onRate={handleRateResource}
         onOpenPremium={() => {
+          const current = selectedResource;
           setSelectedResourceId(null);
-          setPremiumOpen(true);
+          openPremiumModal(current);
         }}
       />
 
@@ -2458,41 +3898,59 @@ export default function App() {
         onClose={() => setSearchOpen(false)}
         onSelectResource={handleOpenResourceDetail}
         onSelectTool={(id) => openTool(id, 'workbench')}
+        onOpenTiers={() => navigateTab('tiers')}
+        onOpenRanks={() => navigateTab('ranks')}
+        onOpenStats={() => navigateTab('stats')}
       />
 
       <PremiumModal
         open={premiumOpen}
         isPremium={state.isPremium}
         membershipTier={state.membershipTier}
-        onClose={() => setPremiumOpen(false)}
+        isOwner={isOwner}
+        isSignedIn={Boolean(firebaseUser)}
+        emailVerified={Boolean(firebaseUser?.emailVerified)}
+        siteSettings={siteSettings}
+        pendingResource={pendingPurchaseResource}
+        orders={membershipOrders.filter((ord) => ord.userId === firebaseUser?.uid)}
+        onClose={() => {
+          setPremiumOpen(false);
+          setPendingPurchaseResource(null);
+        }}
+        onSubmitOrder={handleSubmitMembershipOrder}
+        onRequireSignIn={() => {
+          setAuthModalMode('signin');
+          setAuthModalOpen(true);
+        }}
+        onOpenAccount={() => setAccountModalOpen(true)}
         onSelectMembershipTier={(tier) => {
+          if (!canSelfSwitchTier(isOwner)) return;
           const active = tier !== 'free';
           setState((prev) => ({
             ...prev,
             membershipTier: tier,
             isPremium: active,
           }));
-          void persistUserMetrics({ isPremium: active }).catch(() => {});
           showToast(
             tier === 'ultimate'
-              ? 'SwxStudios Ultimate activated — Premium, Paid & Ultimate Vault unlocked.'
+              ? 'Owner Preview: Ultimate unlocked.'
               : tier === 'premium'
-              ? 'SwxStudios Premium activated — Premium vault unlocked.'
-              : 'Switched back to Free tier.'
+              ? 'Owner Preview: Premium unlocked.'
+              : 'Owner Preview: Switched to Free tier.'
           );
         }}
         onTogglePremium={(active) => {
+          if (!canSelfSwitchTier(isOwner)) return;
           const nextTier: MembershipTier = active ? 'premium' : 'free';
           setState((prev) => ({
             ...prev,
             membershipTier: nextTier,
             isPremium: active,
           }));
-          void persistUserMetrics({ isPremium: active }).catch(() => {});
           showToast(
             active
-              ? 'SwxStudios Premium activated — Exclusive vault unlocked.'
-              : 'Premium preview deactivated.'
+              ? 'Owner Preview: Premium unlocked.'
+              : 'Owner Preview: Switched to Free tier.'
           );
         }}
       />
@@ -2503,6 +3961,11 @@ export default function App() {
         open={authModalOpen}
         initialMode={authModalMode}
         oauthStatuses={oauthStatuses}
+        botVerified={botVerifyStatus === 'verified'}
+        onBotVerified={({ rayId }) => {
+          setVerifyRayId(rayId);
+          setBotVerifyStatus('verified');
+        }}
         onClose={() => setAuthModalOpen(false)}
         onEmailSignIn={handleEmailSignIn}
         onEmailSignUp={handleEmailSignUp}
@@ -2547,8 +4010,8 @@ export default function App() {
           showToast('Display name saved.');
         }}
         onUpdateAvatarUrl={async (nextAvatarUrl) => {
-          if (!auth.currentUser) return;
-          const cleanAvatar = clampString(nextAvatarUrl, BLUEPRINT_LIMITS.URL_MAX);
+          const cleanAvatar = savePreferredMcAvatar(nextAvatarUrl);
+          if (!auth.currentUser || !cleanAvatar) return;
           await updateProfile(auth.currentUser, { photoURL: cleanAvatar });
           setAuthVersion((v) => v + 1);
           await persistUserMetrics({ avatarUrl: cleanAvatar });

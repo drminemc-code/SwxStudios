@@ -1,7 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowRight, RefreshCw, Server, Wifi } from 'lucide-react';
-import { LiveServerStatus, MinecraftServerListing } from '../types';
-import { parseMinecraftFormattedSegments } from '../utils/mcToolsLogic';
+import { LiveServerStatus, MinecraftServerListing, ProbeRegionId } from '../types';
+import {
+  parseMinecraftFormattedSegments,
+  resolveProbeRegionInfo,
+} from '../utils/mcToolsLogic';
 
 interface MinecraftFormattedTextProps {
   text: string;
@@ -190,6 +193,7 @@ export const LiveMotdCard: React.FC<LiveMotdCardProps> = ({
 interface InteractiveHeroServerCardProps {
   featuredServers: MinecraftServerListing[];
   liveStatusMap: Record<string, LiveServerStatus>;
+  probeRegion?: ProbeRegionId;
   onRefreshServer: (srv: MinecraftServerListing) => void;
   onOpenServers: () => void;
   onOpenMotdTool: () => void;
@@ -198,10 +202,12 @@ interface InteractiveHeroServerCardProps {
 export const InteractiveHeroServerCard: React.FC<InteractiveHeroServerCardProps> = ({
   featuredServers,
   liveStatusMap,
+  probeRegion = 'asia',
   onRefreshServer,
   onOpenServers,
   onOpenMotdTool,
 }) => {
+  const regionMeta = resolveProbeRegionInfo(probeRegion);
   const [selectedId, setSelectedId] = useState<string>(
     featuredServers[0]?.id || 'custom-ping'
   );
@@ -266,7 +272,7 @@ export const InteractiveHeroServerCard: React.FC<InteractiveHeroServerCardProps>
     setCustomLoading(true);
     try {
       const res = await fetch(
-        `/api/mc/status?host=${encodeURIComponent(target)}&edition=java&fresh=1`
+        `/api/mc/status?host=${encodeURIComponent(target)}&edition=java&region=${encodeURIComponent(probeRegion)}&fresh=1`
       );
       const data = (await res.json()) as {
         online?: boolean;
@@ -275,6 +281,8 @@ export const InteractiveHeroServerCard: React.FC<InteractiveHeroServerCardProps>
         version?: string | null;
         software?: string | null;
         pingMs?: number | null;
+        probeRegion?: string;
+        probeLocation?: string;
         playersOnline?: number;
         playersMax?: number;
         motdLines?: string[];
@@ -291,6 +299,8 @@ export const InteractiveHeroServerCard: React.FC<InteractiveHeroServerCardProps>
           version: data.version ?? null,
           software: data.software ?? null,
           pingMs: typeof data.pingMs === 'number' ? data.pingMs : null,
+          probeRegion: data.probeRegion || probeRegion,
+          probeLocation: data.probeLocation || regionMeta.label,
           playersOnline: typeof data.playersOnline === 'number' ? data.playersOnline : 0,
           playersMax: typeof data.playersMax === 'number' ? data.playersMax : 0,
           motdLines: Array.isArray(data.motdLines) ? data.motdLines : [],
@@ -321,10 +331,16 @@ export const InteractiveHeroServerCard: React.FC<InteractiveHeroServerCardProps>
       {/* Header + Quick IP Connect Bar */}
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800/80 pb-2.5 text-[11px]">
         <span className="inline-flex items-center gap-1.5 font-display-mono font-semibold uppercase tracking-wider text-zinc-300">
-          <Wifi className="h-3.5 w-3.5 text-rose-400" aria-hidden="true" />
-          <span>SELECT SERVER · LIVE SLP</span>
+          <Wifi className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+          <span>{regionMeta.shortLabel} · LIVE SLP</span>
         </span>
-        <span className="font-display-mono text-zinc-400 tabular-nums">
+        <span
+          className={`font-display-mono tabular-nums ${
+            activeLive?.online === true && typeof activeLive.pingMs === 'number' && activeLive.pingMs <= 75
+              ? 'text-emerald-300'
+              : 'text-zinc-400'
+          }`}
+        >
           {activeLive?.loading || customLoading
             ? 'Pinging...'
             : activeLive?.online === true && typeof activeLive.pingMs === 'number'
@@ -345,7 +361,7 @@ export const InteractiveHeroServerCard: React.FC<InteractiveHeroServerCardProps>
           type="text"
           value={customIp}
           onChange={(e) => setCustomIp(e.target.value)}
-          placeholder="Ping any IP (e.g. play.hypixel.net)"
+          placeholder="Ping any IP (e.g. donutsmp.net)"
           className="h-8 min-w-0 flex-1 rounded border border-zinc-800 bg-zinc-950 px-2.5 font-display-mono text-[11px] text-zinc-100 placeholder:text-zinc-600 focus:border-rose-500 focus:outline-none"
         />
         <button

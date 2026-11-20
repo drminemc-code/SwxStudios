@@ -18,12 +18,14 @@ import {
   Star,
   Trash2,
   Upload,
+  Wallet,
 } from 'lucide-react';
 import { CATEGORIES } from '../data/catalog';
 import {
   ArtworkTheme,
   CategoryId,
   CommunityThread,
+  MembershipOrder,
   MinecraftServerListing,
   ResourceItem,
   ResourceTier,
@@ -56,6 +58,7 @@ interface AdminPanelViewProps {
   resources: ResourceItem[];
   threads: CommunityThread[];
   servers: MinecraftServerListing[];
+  membershipOrders?: MembershipOrder[];
   siteSettings: SiteSettings;
   onRequireSignIn: () => void;
   onReturnHome: () => void;
@@ -75,6 +78,11 @@ interface AdminPanelViewProps {
     updates: { approved?: boolean; featured?: boolean }
   ) => Promise<void>;
   onDeleteServer: (serverId: string) => Promise<void>;
+  onResolveMembershipOrder?: (
+    order: MembershipOrder,
+    decision: 'approved' | 'declined'
+  ) => Promise<void>;
+  onOpenTiersConsole?: () => void;
 }
 
 function createEmptyDraft(authorName: string): ResourceDraftInput {
@@ -120,6 +128,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   resources,
   threads,
   servers,
+  membershipOrders = [],
   siteSettings,
   onRequireSignIn,
   onReturnHome,
@@ -131,6 +140,8 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   onDeleteThread,
   onUpdateServerFlags,
   onDeleteServer,
+  onResolveMembershipOrder,
+  onOpenTiersConsole,
 }) => {
   const [workspaceTab, setWorkspaceTab] = useState<AdminWorkspaceTab>('upload');
   const [draft, setDraft] = useState<ResourceDraftInput>(() =>
@@ -155,6 +166,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
   const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
+  const [resolvingOrderId, setResolvingOrderId] = useState<string | null>(null);
 
   useEffect(() => {
     setSettingsDraft(siteSettings);
@@ -376,6 +388,10 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           'Free, Paid, Popular, Premium, and Ultimate releases verified for Minecraft servers.',
         communityEnabled: settingsDraft.communityEnabled !== false,
         heroHeadline: settingsDraft.heroHeadline?.trim() || '',
+        gcashNumber: settingsDraft.gcashNumber?.trim() || '',
+        gcashName: settingsDraft.gcashName?.trim() || '',
+        paypalEmail: settingsDraft.paypalEmail?.trim() || '',
+        paypalLink: settingsDraft.paypalLink?.trim() || '',
       });
       setSettingsFeedback('Site settings synced to Firestore.');
     } catch (err) {
@@ -1426,6 +1442,88 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   className="h-4 w-4 accent-white"
                 />
               </label>
+
+              {/* GCash & PayPal Payment Accounts */}
+              <div className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <Wallet className="h-4 w-4 text-sky-400" aria-hidden="true" />
+                  <div>
+                    <p className="text-xs font-bold text-white">
+                      GCash &amp; PayPal Payment Details
+                    </p>
+                    <p className="text-[11px] text-zinc-500">
+                      Shown to members when buying Premium, Ultimate, or Paid packages.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div>
+                    <label htmlFor="ctrl-gcash-name" className="block text-[11px] font-medium text-zinc-300">
+                      GCash Account Name
+                    </label>
+                    <input
+                      id="ctrl-gcash-name"
+                      type="text"
+                      maxLength={80}
+                      value={settingsDraft.gcashName || ''}
+                      onChange={(e) =>
+                        setSettingsDraft((p) => ({ ...p, gcashName: e.target.value }))
+                      }
+                      placeholder="SwxStudios Owner"
+                      className="mt-1 h-9 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="ctrl-gcash-number" className="block text-[11px] font-medium text-zinc-300">
+                      GCash Mobile Number
+                    </label>
+                    <input
+                      id="ctrl-gcash-number"
+                      type="text"
+                      maxLength={32}
+                      value={settingsDraft.gcashNumber || ''}
+                      onChange={(e) =>
+                        setSettingsDraft((p) => ({ ...p, gcashNumber: e.target.value }))
+                      }
+                      placeholder="09XX XXX XXXX"
+                      className="mt-1 h-9 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 font-display-mono text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="ctrl-paypal-email" className="block text-[11px] font-medium text-zinc-300">
+                      PayPal Email
+                    </label>
+                    <input
+                      id="ctrl-paypal-email"
+                      type="email"
+                      maxLength={120}
+                      value={settingsDraft.paypalEmail || ''}
+                      onChange={(e) =>
+                        setSettingsDraft((p) => ({ ...p, paypalEmail: e.target.value }))
+                      }
+                      placeholder="randellemupas@gmail.com"
+                      className="mt-1 h-9 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 font-display-mono text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="ctrl-paypal-link" className="block text-[11px] font-medium text-zinc-300">
+                      PayPal.me Link (Optional)
+                    </label>
+                    <input
+                      id="ctrl-paypal-link"
+                      type="url"
+                      maxLength={240}
+                      value={settingsDraft.paypalLink || ''}
+                      onChange={(e) =>
+                        setSettingsDraft((p) => ({ ...p, paypalLink: e.target.value }))
+                      }
+                      placeholder="https://paypal.me/..."
+                      className="mt-1 h-9 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 font-display-mono text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
 
             {settingsError && (
@@ -1490,6 +1588,15 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   );
                 })}
               </ul>
+              {onOpenTiersConsole && (
+                <button
+                  type="button"
+                  onClick={onOpenTiersConsole}
+                  className="mt-2 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/15 px-3 text-xs font-bold text-amber-200 hover:bg-amber-500/25"
+                >
+                  <span>Open PvP Tier List &amp; Commands Console</span>
+                </button>
+              )}
             </div>
 
             <div className="rounded-xl border border-zinc-800/90 bg-[#111114] p-5 space-y-3">
@@ -1626,6 +1733,94 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+
+            {/* GCash & PayPal Order Verification Queue */}
+            <div className="rounded-xl border border-zinc-800/90 bg-[#111114] p-5 space-y-3">
+              <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
+                <div className="flex items-center gap-2">
+                  <Wallet className="h-4 w-4 text-sky-400" aria-hidden="true" />
+                  <h2 className="text-sm font-bold text-white">GCash &amp; PayPal Orders</h2>
+                </div>
+                <span className="text-xs text-zinc-400 tabular-nums">
+                  {membershipOrders.filter((o) => o.status === 'pending').length} pending
+                </span>
+              </div>
+
+              {membershipOrders.length === 0 ? (
+                <p className="py-4 text-center text-xs text-zinc-500">
+                  No GCash or PayPal purchase proofs submitted yet.
+                </p>
+              ) : (
+                <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                  {membershipOrders.map((ord) => {
+                    const busy = resolvingOrderId === ord.id;
+                    return (
+                      <div
+                        key={ord.id}
+                        className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3 text-xs"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate font-semibold text-zinc-100">
+                            {ord.buyerName} ·{' '}
+                            {ord.plan === 'package'
+                              ? ord.resourceTitle || 'Paid Package'
+                              : ord.plan.toUpperCase()}
+                          </span>
+                          <span
+                            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                              ord.status === 'approved'
+                                ? 'bg-emerald-500/20 text-emerald-300'
+                                : ord.status === 'declined'
+                                ? 'bg-red-500/20 text-red-300'
+                                : 'bg-amber-500/20 text-amber-300'
+                            }`}
+                          >
+                            {ord.status}
+                          </span>
+                        </div>
+                        <p className="mt-1 truncate font-display-mono text-[11px] text-zinc-400">
+                          {ord.paymentMethod.toUpperCase()} · {ord.amountLabel} · Ref:{' '}
+                          {ord.referenceCode}
+                        </p>
+                        <p className="truncate text-[11px] text-zinc-500">
+                          From: {ord.senderAccount}
+                        </p>
+                        {ord.status === 'pending' && onResolveMembershipOrder && (
+                          <div className="mt-2 flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => {
+                                setResolvingOrderId(ord.id);
+                                void onResolveMembershipOrder(ord, 'approved').finally(() =>
+                                  setResolvingOrderId(null)
+                                );
+                              }}
+                              className="rounded bg-emerald-500/20 border border-emerald-500/40 px-2.5 py-1 text-[11px] font-semibold text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-60"
+                            >
+                              Approve &amp; Unlock
+                            </button>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => {
+                                setResolvingOrderId(ord.id);
+                                void onResolveMembershipOrder(ord, 'declined').finally(() =>
+                                  setResolvingOrderId(null)
+                                );
+                              }}
+                              className="rounded border border-zinc-800 px-2.5 py-1 text-[11px] text-zinc-400 hover:border-red-500/40 hover:text-red-300 disabled:opacity-60"
+                            >
+                              Decline
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

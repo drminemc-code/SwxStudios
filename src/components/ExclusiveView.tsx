@@ -68,7 +68,7 @@ export const ExclusiveView: React.FC<ExclusiveViewProps> = ({
               ? 'Ultimate Unlocked'
               : isPremium
               ? 'Premium Unlocked'
-              : 'Upgrade to Premium / Ultimate'}
+              : 'Buy with GCash / PayPal'}
           </span>
         </button>
       </div>

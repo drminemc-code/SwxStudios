@@ -5,6 +5,7 @@ import {
   Copy,
   Gauge,
   Globe,
+  Map as MapIcon,
   Plus,
   RefreshCw,
   Search,
@@ -19,6 +20,7 @@ import {
 import {
   LiveServerStatus,
   MinecraftServerListing,
+  ProbeRegionId,
   ServerEdition,
   ServerTelemetrySnapshot,
 } from '../types';
@@ -26,9 +28,15 @@ import {
   classifyPingHealth,
   classifyTpsHealth,
   parseTopPlayerEntry,
+  PROBE_REGIONS,
+  resolveProbeRegionInfo,
   ServerDraftInput,
+  type ServerSortMode,
+  sortServerListings,
   validateServerDraft,
 } from '../utils/mcToolsLogic';
+import { buildMinecraftHeadAvatarUrl } from '../utils/skinLogic';
+import { ExploreMapModal } from './ExploreMapModal';
 import { MinecraftFormattedText } from './MinecraftTextPreview';
 import { ServerDetailModal } from './ServerDetailModal';
 
@@ -36,6 +44,8 @@ interface ServersViewProps {
   servers: MinecraftServerListing[];
   liveStatusMap: Record<string, LiveServerStatus>;
   telemetryMap: Record<string, ServerTelemetrySnapshot>;
+  probeRegion?: ProbeRegionId;
+  onProbeRegionChange?: (region: ProbeRegionId) => void;
   canPost: boolean;
   isOwner: boolean;
   currentUid?: string | null;
@@ -81,7 +91,14 @@ const SERVER_CATEGORIES = [
   'Other',
 ] as const;
 
-type ServerSortMode = 'featured' | 'popular' | 'players' | 'newest';
+const SORT_MODE_LABELS: Record<ServerSortMode, string> = {
+  featured: 'Featured',
+  votes: 'Most Voted',
+  tps: 'Highest TPS',
+  ping: 'Lowest Ping',
+  players: 'Most Players Online',
+  newest: 'Recently Added',
+};
 
 const EMPTY_DRAFT: ServerDraftInput = {
   name: '',
@@ -102,6 +119,8 @@ export const ServersView: React.FC<ServersViewProps> = ({
   servers,
   liveStatusMap,
   telemetryMap,
+  probeRegion = 'asia',
+  onProbeRegionChange,
   canPost,
   isOwner,
   currentUid,
@@ -138,10 +157,12 @@ export const ServersView: React.FC<ServersViewProps> = ({
   const [submitting, setSubmitting] = useState(false);
 
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [detailServerId, setDetailServerId] = useState<string | null>(
     initialSelectedServerId ?? null
   );
+  const [exploreMapServerId, setExploreMapServerId] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialSelectedServerId) {
@@ -176,7 +197,7 @@ export const ServersView: React.FC<ServersViewProps> = ({
     }
 
     const res = await fetch(
-      `/api/mc/status?host=${encodeURIComponent(clean)}&edition=${edition}&fresh=1`
+      `/api/mc/status?host=${encodeURIComponent(clean)}&edition=${edition}&region=${encodeURIComponent(probeRegion)}&fresh=1`
     );
     const data = (await res.json()) as {
       online?: boolean;
@@ -187,6 +208,8 @@ export const ServersView: React.FC<ServersViewProps> = ({
       version?: string | null;
       software?: string | null;
       pingMs?: number | null;
+      probeRegion?: string;
+      probeLocation?: string;
       playersOnline?: number;
       playersMax?: number;
       playerSample?: Array<{ uuid: string; name: string }>;
@@ -196,11 +219,15 @@ export const ServersView: React.FC<ServersViewProps> = ({
       error?: string;
     };
 
+    const regionMeta = resolveProbeRegionInfo(probeRegion);
+
     if (!res.ok) {
       return {
         loading: false,
         online: false,
         host: clean,
+        probeRegion,
+        probeLocation: regionMeta.label,
         playersOnline: 0,
         playersMax: 0,
         error: data.error || 'Could not reach server.',
@@ -217,6 +244,8 @@ export const ServersView: React.FC<ServersViewProps> = ({
       version: data.version || null,
       software: data.software || null,
       pingMs: typeof data.pingMs === 'number' ? data.pingMs : null,
+      probeRegion: data.probeRegion || probeRegion,
+      probeLocation: data.probeLocation || regionMeta.label,
       playersOnline: data.playersOnline ?? 0,
       playersMax: data.playersMax ?? 0,
       playerSample: Array.isArray(data.playerSample) ? data.playerSample : [],
@@ -258,7 +287,7 @@ export const ServersView: React.FC<ServersViewProps> = ({
     return () => {
       if (quickDebounceRef.current) window.clearTimeout(quickDebounceRef.current);
     };
-  }, [quickIpInput, quickEdition]);
+  }, [quickIpInput, quickEdition, probeRegion]);
 
   // Auto-connect & auto-fill Submit Server form whenever Server IP changes
   useEffect(() => {
@@ -374,46 +403,28 @@ export const ServersView: React.FC<ServersViewProps> = ({
   const visibleServers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     const catLower = categoryFilter.toLowerCase();
-    return servers
-      .filter((s) => {
-        if (!isOwner && !s.approved) return false;
-        if (editionFilter !== 'All' && s.edition !== editionFilter) return false;
-        if (categoryFilter !== 'All Categories') {
-          const modes = s.gameModes.map((m) => m.toLowerCase());
-          const matchesCat =
-            modes.some((m) => m.includes(catLower) || catLower.includes(m)) ||
-            s.name.toLowerCase().includes(catLower);
-          if (!matchesCat) return false;
-        }
-        if (onlineOnly) {
-          const ping = liveStatusMap[s.id];
-          if (!ping || ping.online !== true) return false;
-        }
-        if (!q) return true;
-        return (
-          s.name.toLowerCase().includes(q) ||
-          s.address.toLowerCase().includes(q) ||
-          s.gameModes.some((m) => m.toLowerCase().includes(q))
-        );
-      })
-      .sort((a, b) => {
-        if (sortMode === 'featured') {
-          if (a.featured !== b.featured) return a.featured ? -1 : 1;
-          const aPlayers = liveStatusMap[a.id]?.playersOnline ?? 0;
-          const bPlayers = liveStatusMap[b.id]?.playersOnline ?? 0;
-          if (aPlayers !== bPlayers) return bPlayers - aPlayers;
-          return b.votes - a.votes;
-        }
-        if (sortMode === 'players') {
-          const aPlayers = liveStatusMap[a.id]?.playersOnline ?? -1;
-          const bPlayers = liveStatusMap[b.id]?.playersOnline ?? -1;
-          return bPlayers - aPlayers;
-        }
-        if (sortMode === 'popular') {
-          return b.votes - a.votes;
-        }
-        return b.id.localeCompare(a.id);
-      });
+    const filtered = servers.filter((s) => {
+      if (!isOwner && !s.approved) return false;
+      if (editionFilter !== 'All' && s.edition !== editionFilter) return false;
+      if (categoryFilter !== 'All Categories') {
+        const modes = s.gameModes.map((m) => m.toLowerCase());
+        const matchesCat =
+          modes.some((m) => m.includes(catLower) || catLower.includes(m)) ||
+          s.name.toLowerCase().includes(catLower);
+        if (!matchesCat) return false;
+      }
+      if (onlineOnly) {
+        const ping = liveStatusMap[s.id];
+        if (!ping || ping.online !== true) return false;
+      }
+      if (!q) return true;
+      return (
+        s.name.toLowerCase().includes(q) ||
+        s.address.toLowerCase().includes(q) ||
+        s.gameModes.some((m) => m.toLowerCase().includes(q))
+      );
+    });
+    return sortServerListings(filtered, sortMode, liveStatusMap, telemetryMap);
   }, [
     servers,
     editionFilter,
@@ -421,6 +432,7 @@ export const ServersView: React.FC<ServersViewProps> = ({
     sortMode,
     onlineOnly,
     liveStatusMap,
+    telemetryMap,
     searchQuery,
     isOwner,
   ]);
@@ -441,6 +453,11 @@ export const ServersView: React.FC<ServersViewProps> = ({
   const detailServer = useMemo(
     () => servers.find((s) => s.id === detailServerId) ?? null,
     [servers, detailServerId]
+  );
+
+  const exploreMapServer = useMemo(
+    () => servers.find((s) => s.id === exploreMapServerId) ?? null,
+    [servers, exploreMapServerId]
   );
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -470,12 +487,27 @@ export const ServersView: React.FC<ServersViewProps> = ({
   const handleCopy = async (server: MinecraftServerListing) => {
     try {
       await navigator.clipboard.writeText(server.address);
-      setCopiedId(server.id);
-      onCopyAddress(server.address);
-      window.setTimeout(() => setCopiedId((prev) => (prev === server.id ? null : prev)), 1800);
     } catch {
-      onCopyAddress(server.address);
+      try {
+        const el = document.createElement('textarea');
+        el.value = server.address;
+        el.setAttribute('readonly', '');
+        el.style.position = 'fixed';
+        el.style.opacity = '0';
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+      } catch {
+        // Ignore fallback clipboard restriction
+      }
     }
+    if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
+    setCopiedId(server.id);
+    onCopyAddress(server.address);
+    copyTimerRef.current = window.setTimeout(() => {
+      setCopiedId((prev) => (prev === server.id ? null : prev));
+    }, 1800);
   };
 
   const handleRefreshDirectory = async () => {
@@ -488,10 +520,10 @@ export const ServersView: React.FC<ServersViewProps> = ({
   };
 
   return (
-    <section className="mx-auto max-w-[1200px] px-4 py-8 sm:px-6">
+    <section className="mx-auto max-w-[1200px] overflow-x-hidden px-4 py-8 sm:px-6">
       {/* Header */}
-      <div className="flex flex-col gap-4 border-b border-zinc-800/80 pb-6 sm:flex-row sm:items-end sm:justify-between">
-        <div>
+      <div className="flex flex-col gap-4 border-b border-zinc-800/80 pb-6 lg:flex-row lg:items-end lg:justify-between">
+        <div className="max-w-xl">
           <div className="flex items-center gap-2 text-xs font-medium text-rose-400">
             <Server className="h-3.5 w-3.5" aria-hidden="true" />
             <span>SwxStudios / Live Minecraft Server List</span>
@@ -504,7 +536,27 @@ export const ServersView: React.FC<ServersViewProps> = ({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <div className="inline-flex h-10 items-center gap-2 rounded-md border border-zinc-800 bg-[#111114] px-3 text-xs text-zinc-200">
+            <Globe className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+            <label htmlFor="servers-probe-region" className="text-[11px] text-zinc-400">
+              Location:
+            </label>
+            <select
+              id="servers-probe-region"
+              aria-label="Ping probe location"
+              value={probeRegion}
+              onChange={(e) => onProbeRegionChange?.(e.target.value as ProbeRegionId)}
+              className="bg-transparent font-semibold text-emerald-300 focus:outline-none"
+            >
+              {PROBE_REGIONS.map((region) => (
+                <option key={region.id} value={region.id} className="bg-zinc-950 text-zinc-100">
+                  {region.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <button
             type="button"
             onClick={() => void handleRefreshDirectory()}
@@ -541,10 +593,10 @@ export const ServersView: React.FC<ServersViewProps> = ({
           <div>
             <h2 className="text-sm font-bold text-white flex items-center gap-2">
               <Wifi className="h-4 w-4 text-emerald-400" aria-hidden="true" />
-              <span>Instant Auto-Connect Server IP</span>
+              <span>Instant Auto-Connect Server IP ({resolveProbeRegionInfo(probeRegion).label})</span>
             </h2>
             <p className="mt-0.5 text-xs text-zinc-400">
-              Type any Java or Bedrock IP (e.g. <span className="font-display-mono text-zinc-300">mc.hypixel.net</span> or <span className="font-display-mono text-zinc-300">hazzardsmp.ultramc.co</span>) to connect automatically and inspect status, ping, players, and MOTD.
+              Type any Java or Bedrock IP (e.g. <span className="font-display-mono text-zinc-300">donutsmp.net</span>, <span className="font-display-mono text-zinc-300">mcpvp.club</span>, or <span className="font-display-mono text-zinc-300">acersmp.xyz</span>) to connect automatically and inspect status, ping, players, and MOTD.
             </p>
           </div>
 
@@ -556,7 +608,7 @@ export const ServersView: React.FC<ServersViewProps> = ({
               type="text"
               value={quickIpInput}
               onChange={(e) => setQuickIpInput(e.target.value)}
-              placeholder="Enter server IP (e.g. mc.hypixel.net)..."
+              placeholder="Enter server IP (e.g. donutsmp.net)..."
               aria-label="Connect server IP for live status"
               className="h-10 flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-3 font-display-mono text-xs text-zinc-100 placeholder:text-zinc-600 focus:border-rose-500 focus:outline-none"
             />
@@ -676,7 +728,7 @@ export const ServersView: React.FC<ServersViewProps> = ({
                         className="inline-flex items-center gap-1 rounded border border-zinc-800 bg-zinc-950 px-2 py-0.5 font-display-mono text-[11px] text-zinc-200"
                       >
                         <img
-                          src={`https://mc-heads.net/avatar/${encodeURIComponent(p.name)}/16`}
+                          src={buildMinecraftHeadAvatarUrl(p.name, { size: 20 })}
                           alt=""
                           className="h-3.5 w-3.5 rounded-sm"
                         />
@@ -988,8 +1040,10 @@ export const ServersView: React.FC<ServersViewProps> = ({
             className="h-9 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-xs text-zinc-200 focus:border-rose-500 focus:outline-none"
           >
             <option value="featured">Sort: Featured</option>
+            <option value="votes">Sort: Most Voted</option>
+            <option value="tps">Sort: Highest TPS</option>
+            <option value="ping">Sort: Lowest Ping</option>
             <option value="players">Sort: Most Players Online</option>
-            <option value="popular">Sort: Most Popular</option>
             <option value="newest">Sort: Recently Added</option>
           </select>
 
@@ -1040,7 +1094,7 @@ export const ServersView: React.FC<ServersViewProps> = ({
       <div className="mt-5 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-400">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-semibold text-white">
-            Featured · {visibleServers.length} server{visibleServers.length === 1 ? '' : 's'}
+            {SORT_MODE_LABELS[sortMode]} · {visibleServers.length} server{visibleServers.length === 1 ? '' : 's'}
           </span>
           <span aria-hidden="true">·</span>
           <span className="text-emerald-300 font-medium tabular-nums">
@@ -1257,7 +1311,7 @@ export const ServersView: React.FC<ServersViewProps> = ({
                         {topPlayersPreview.map((pName) => (
                           <img
                             key={pName}
-                            src={`https://mc-heads.net/avatar/${encodeURIComponent(pName)}/20`}
+                            src={buildMinecraftHeadAvatarUrl(pName, { size: 24 })}
                             alt={pName}
                             title={pName}
                             className="h-5 w-5 rounded border border-zinc-700"
@@ -1270,18 +1324,34 @@ export const ServersView: React.FC<ServersViewProps> = ({
 
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-800/80 pt-3">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => void handleCopy(srv)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 font-display-mono text-xs text-zinc-100 hover:border-rose-500/60"
-                    >
-                      {copiedId === srv.id ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-400" />
-                      ) : (
-                        <Copy className="h-3.5 w-3.5 text-zinc-400" />
+                    <div className="relative inline-flex">
+                      {copiedId === srv.id && (
+                        <span
+                          role="status"
+                          className="pointer-events-none absolute -top-8 left-1/2 z-20 inline-flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-md border border-emerald-500/50 bg-emerald-950/95 px-2 py-0.5 text-[11px] font-bold text-emerald-300 shadow-lg"
+                        >
+                          <Check className="h-3 w-3" aria-hidden="true" />
+                          <span>Copied!</span>
+                        </span>
                       )}
-                      <span>{srv.address}</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleCopy(srv)}
+                        aria-label={`Copy server address ${srv.address}`}
+                        className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-display-mono text-xs transition-colors ${
+                          copiedId === srv.id
+                            ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-200'
+                            : 'border-zinc-700 bg-zinc-900 text-zinc-100 hover:border-rose-500/60'
+                        }`}
+                      >
+                        {copiedId === srv.id ? (
+                          <Check className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+                        ) : (
+                          <Copy className="h-3.5 w-3.5 text-zinc-400" aria-hidden="true" />
+                        )}
+                        <span>{srv.address}</span>
+                      </button>
+                    </div>
 
                     <button
                       type="button"
@@ -1290,6 +1360,16 @@ export const ServersView: React.FC<ServersViewProps> = ({
                     >
                       <Gauge className="h-3 w-3 text-rose-400" aria-hidden="true" />
                       <span>Details & Stats</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setExploreMapServerId(srv.id)}
+                      aria-label={`Explore Map for ${srv.name}`}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-950 px-2.5 text-[11px] font-semibold text-zinc-200 hover:border-emerald-500/60 hover:text-emerald-200"
+                    >
+                      <MapIcon className="h-3 w-3 text-emerald-400" aria-hidden="true" />
+                      <span>Explore Map</span>
                     </button>
 
                     <button
@@ -1362,7 +1442,17 @@ export const ServersView: React.FC<ServersViewProps> = ({
         onRefreshLive={(srv) => onCheckLiveStatus(srv, true)}
         onVote={onVoteServer}
         onCopyAddress={onCopyAddress}
+        onExploreMap={(srv) => {
+          setDetailServerId(null);
+          setExploreMapServerId(srv.id);
+        }}
         onSaveTelemetry={onUpdateServerTelemetry}
+      />
+
+      {/* Explore Map World Preview Modal */}
+      <ExploreMapModal
+        server={exploreMapServer}
+        onClose={() => setExploreMapServerId(null)}
       />
     </section>
   );

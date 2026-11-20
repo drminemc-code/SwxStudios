@@ -10,6 +10,9 @@ interface CommandSearchModalProps {
   onClose: () => void;
   onSelectResource: (resource: ResourceItem) => void;
   onSelectTool?: (toolId: ToolId) => void;
+  onOpenTiers?: () => void;
+  onOpenRanks?: () => void;
+  onOpenStats?: () => void;
 }
 
 export const CommandSearchModal: React.FC<CommandSearchModalProps> = ({
@@ -18,6 +21,9 @@ export const CommandSearchModal: React.FC<CommandSearchModalProps> = ({
   onClose,
   onSelectResource,
   onSelectTool,
+  onOpenTiers,
+  onOpenRanks,
+  onOpenStats,
 }) => {
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -120,6 +126,90 @@ export const CommandSearchModal: React.FC<CommandSearchModalProps> = ({
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+
+          {onOpenTiers && (!qLower || 'pvp tier list mctiers rank combat leaderboard'.includes(qLower) || qLower.includes('tier')) && (
+            <div>
+              <p className="px-3 py-1 font-display-mono text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                Rankings &amp; Tiers
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenTiers();
+                  onClose();
+                }}
+                className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors hover:bg-zinc-900"
+              >
+                <div className="min-w-0 pr-3">
+                  <p className="truncate text-sm font-semibold text-amber-300">
+                    Combat PvP Tier Ledger
+                  </p>
+                  <p className="truncate text-xs text-zinc-400">
+                    8 competitive kits (HT1–LT5) + Owner &amp; Admin /tier commands console
+                  </p>
+                </div>
+                <ArrowRight className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
+              </button>
+            </div>
+          )}
+
+          {onOpenRanks &&
+            (!qLower ||
+              'server ranks friends friend request owner admin staff support ultimate paid member suggest player'.includes(
+                qLower
+              ) ||
+              qLower.includes('rank') ||
+              qLower.includes('friend')) && (
+              <div>
+                <p className="px-3 py-1 font-display-mono text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                  Community &amp; Social
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onOpenRanks();
+                    onClose();
+                  }}
+                  className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors hover:bg-zinc-900"
+                >
+                  <div className="min-w-0 pr-3">
+                    <p className="truncate text-sm font-semibold text-indigo-300">
+                      Server Ranks &amp; Friends
+                    </p>
+                    <p className="truncate text-xs text-zinc-400">
+                      Discord-style 8-rank roles, friend requests, player search &amp; player suggestions
+                    </p>
+                  </div>
+                  <ArrowRight className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
+                </button>
+              </div>
+            )}
+
+          {onOpenStats && (!qLower || 'visits members staffs staff stats roster inventory'.includes(qLower) || qLower.includes('stat')) && (
+            <div>
+              <p className="px-3 py-1 font-display-mono text-[10px] font-bold uppercase tracking-wider text-zinc-500">
+                Directory &amp; Analytics
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenStats();
+                  onClose();
+                }}
+                className="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors hover:bg-zinc-900"
+              >
+                <div className="min-w-0 pr-3">
+                  <p className="truncate text-sm font-semibold text-emerald-300">
+                    Studio Stats &amp; Roster
+                  </p>
+                  <p className="truncate text-xs text-zinc-400">
+                    Live visits, verified members, studio staff, and catalog inventory list
+                  </p>
+                </div>
+                <ArrowRight className="h-4 w-4 shrink-0 text-zinc-500" aria-hidden="true" />
+              </button>
             </div>
           )}
 

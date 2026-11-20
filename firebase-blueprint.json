@@ -26,6 +26,13 @@
         "isPremium": {
           "type": "boolean"
         },
+        "membershipTier": {
+          "type": "string",
+          "enum": ["free", "premium", "ultimate"]
+        },
+        "purchasedIds": {
+          "type": "array"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -408,6 +415,22 @@
           "type": "string",
           "maxLength": 120
         },
+        "gcashNumber": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "gcashName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "paypalEmail": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "paypalLink": {
+          "type": "string",
+          "maxLength": 240
+        },
         "updatedBy": {
           "type": "string",
           "minLength": 1,
@@ -519,6 +542,447 @@
         "submittedByName",
         "createdAt"
       ]
+    },
+    "MembershipOrder": {
+      "title": "MembershipOrder",
+      "description": "GCash or PayPal payment proof submitted by a verified member for Premium, Ultimate, or Paid package unlock.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "buyerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["premium", "ultimate", "package"]
+        },
+        "resourceId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "resourceTitle": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["gcash", "paypal"]
+        },
+        "referenceCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 64
+        },
+        "senderAccount": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "amountLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "declined"]
+        },
+        "adminNote": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "buyerName",
+        "plan",
+        "paymentMethod",
+        "referenceCode",
+        "senderAccount",
+        "amountLabel",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TierPlayer": {
+      "title": "TierPlayer",
+      "description": "Competitive Minecraft PvP Tier List player ranking entry across 8 gamemodes.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ign": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 24,
+          "pattern": "^[a-zA-Z0-9_]+$"
+        },
+        "region": {
+          "type": "string",
+          "enum": ["NA", "EU", "AS", "OCE", "SA"]
+        },
+        "ranks": {
+          "type": "object"
+        },
+        "peakRanks": {
+          "type": "object"
+        },
+        "points": {
+          "type": "number"
+        },
+        "updatedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ign",
+        "region",
+        "ranks",
+        "points",
+        "updatedBy",
+        "updatedByName",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TierAdmin": {
+      "title": "TierAdmin",
+      "description": "Owner-granted Tier List administrator record keyed by Firebase UID (no PII).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "grantedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "grantedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "grantedBy", "grantedByName", "createdAt"]
+    },
+    "TierCommandLog": {
+      "title": "TierCommandLog",
+      "description": "Immutable audit log entry for Owner and Tier Admin console commands.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "commandText": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "executorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "executorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "executorRole": {
+          "type": "string",
+          "enum": ["owner", "admin"]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "commandText",
+        "action",
+        "executorUid",
+        "executorName",
+        "executorRole",
+        "summary",
+        "createdAt"
+      ]
+    },
+    "SiteMetrics": {
+      "title": "SiteMetrics",
+      "description": "Public non-PII SwxStudios site visit counter document.",
+      "type": "object",
+      "properties": {
+        "visits": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["visits", "updatedAt"]
+    },
+    "PublicMember": {
+      "title": "PublicMember",
+      "description": "Zero-PII public member and staff roster profile synced on verified sign-in or owner role delegation.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "avatarUrl": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "role": {
+          "type": "string",
+          "enum": ["member", "admin", "owner"]
+        },
+        "serverRank": {
+          "type": "string",
+          "enum": ["owner", "admin", "staff", "support", "member", "ultimate", "paid", "free"]
+        },
+        "serverRoles": {
+          "type": "array"
+        },
+        "membershipTier": {
+          "type": "string",
+          "enum": ["free", "premium", "ultimate"]
+        },
+        "xp": {
+          "type": "number"
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "role", "membershipTier", "xp", "joinedAt", "updatedAt"]
+    },
+    "Friendship": {
+      "title": "Friendship",
+      "description": "Bidirectional friend request and accepted friendship record keyed by sorted UID pair.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "users": {
+          "type": "array"
+        },
+        "requesterUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "requesterName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "requesterAvatar": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "recipientUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "recipientName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "recipientAvatar": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "declined", "blocked"]
+        },
+        "blockedBy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "users",
+        "requesterUid",
+        "requesterName",
+        "recipientUid",
+        "recipientName",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PlayerSuggestion": {
+      "title": "PlayerSuggestion",
+      "description": "Member-submitted suggestion to add a searched Minecraft player IGN to the roster or Tier List.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ign": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 24,
+          "pattern": "^[a-zA-Z0-9_]+$"
+        },
+        "suggestedRank": {
+          "type": "string",
+          "enum": ["owner", "admin", "staff", "support", "member", "ultimate", "paid", "free"]
+        },
+        "suggestedMode": {
+          "type": "string",
+          "maxLength": 24
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "suggestedBy": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "suggestedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "declined"]
+        },
+        "reviewedBy": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ign",
+        "suggestedBy",
+        "suggestedByName",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -553,6 +1017,38 @@
     "/servers/{serverId}": {
       "schema": { "$ref": "#/entities/ServerListing" },
       "description": "Community-submitted and owner-approved Minecraft server listings."
+    },
+    "/membershipOrders/{orderId}": {
+      "schema": { "$ref": "#/entities/MembershipOrder" },
+      "description": "GCash and PayPal membership/package purchase proof records awaiting owner approval."
+    },
+    "/tierPlayers/{playerId}": {
+      "schema": { "$ref": "#/entities/TierPlayer" },
+      "description": "Competitive PvP Tier List rankings managed by Owner and Tier Admins."
+    },
+    "/tierAdmins/{adminUid}": {
+      "schema": { "$ref": "#/entities/TierAdmin" },
+      "description": "Owner-assigned Tier List administrator roster keyed by Firebase UID."
+    },
+    "/tierCommands/{commandId}": {
+      "schema": { "$ref": "#/entities/TierCommandLog" },
+      "description": "Command execution audit log for Owner and Tier Admin tier controls."
+    },
+    "/metrics/{metricId}": {
+      "schema": { "$ref": "#/entities/SiteMetrics" },
+      "description": "Public site-wide visit counter document (site)."
+    },
+    "/publicMembers/{userId}": {
+      "schema": { "$ref": "#/entities/PublicMember" },
+      "description": "Zero-PII public member, Discord-style server rank, and staff directory synced from verified accounts."
+    },
+    "/friendships/{friendshipId}": {
+      "schema": { "$ref": "#/entities/Friendship" },
+      "description": "Friend requests and accepted friend pairs scoped strictly to the two participant UIDs."
+    },
+    "/playerSuggestions/{suggestionId}": {
+      "schema": { "$ref": "#/entities/PlayerSuggestion" },
+      "description": "Community suggestions to add searched Minecraft players to the roster or Tier List."
     }
   }
 }

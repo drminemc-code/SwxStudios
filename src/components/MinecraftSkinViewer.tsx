@@ -159,6 +159,37 @@ function normalizeSkinSourceTo64x64(source: HTMLImageElement | HTMLCanvasElement
   } else {
     ctx.drawImage(source, 0, 0, 64, 64);
   }
+
+  // Ensure opaque base skin regions (torso, arms, legs, head) never disappear to invisible
+  // even on corrupted, head-only, or transparent-body skins (matches Mojang Java base-layer opacity).
+  const steveBase = buildDefaultSteveCanvas();
+  const baseRegions: Array<[number, number, number, number]> = [
+    [0, 0, 32, 16],   // Head
+    [16, 16, 24, 16], // Torso
+    [40, 16, 16, 16], // Right Arm
+    [0, 16, 16, 16],  // Right Leg
+    [16, 48, 16, 16], // Left Leg
+    [32, 48, 16, 16], // Left Arm
+  ];
+
+  for (const [rx, ry, rw, rh] of baseRegions) {
+    const region = ctx.getImageData(rx, ry, rw, rh);
+    let opaqueCount = 0;
+    for (let i = 3; i < region.data.length; i += 4) {
+      if (region.data[i] >= 25) opaqueCount++;
+    }
+    if (opaqueCount === 0) {
+      ctx.drawImage(steveBase, rx, ry, rw, rh, rx, ry, rw, rh);
+    } else {
+      // Composite any semi-transparent holes inside base region over solid dark skin backing
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-over';
+      ctx.fillStyle = '#18181b';
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.restore();
+    }
+  }
+
   return out;
 }
 
@@ -347,6 +378,9 @@ export const MinecraftSkinViewer: React.FC<MinecraftSkinViewerProps> = ({
     });
   }, []);
 
+  const mirroredRef = useRef(mirrored);
+  mirroredRef.current = mirrored;
+
   const loadPlayerSkin = useCallback(
     async (targetName: string) => {
       const clean = normalizeMinecraftUsername(targetName);
@@ -360,36 +394,40 @@ export const MinecraftSkinViewer: React.FC<MinecraftSkinViewerProps> = ({
       setErrorMsg(null);
 
       try {
-        // Resolve UUID & model type (Classic vs Slim) if available
-        const metaRes = await fetch(`/api/mc/uuid/${encodeURIComponent(clean)}`);
-        let resolvedName = clean;
-        let detectedSlim = false;
-        if (metaRes.ok) {
-          const meta = (await metaRes.json()) as {
-            name?: string;
-            rawUuid?: string;
-            slim?: boolean;
-          };
-          resolvedName = meta.name || clean;
-          setRawUuid(meta.rawUuid || null);
-          detectedSlim = Boolean(meta.slim);
-        } else {
-          setRawUuid(null);
-        }
+        const texUrl = `${buildMinecraftSkinTextureUrl(clean)}?t=${Date.now()}`;
+        const [metaOutcome, texOutcome] = await Promise.allSettled([
+          fetch(`/api/mc/uuid/${encodeURIComponent(clean)}`).then(async (res) =>
+            res.ok
+              ? ((await res.json()) as {
+                  name?: string;
+                  rawUuid?: string;
+                  slim?: boolean;
+                })
+              : null
+          ),
+          loadSkinImageUrl(texUrl),
+        ]);
 
-        const texUrl = `${buildMinecraftSkinTextureUrl(resolvedName)}?t=${Date.now()}`;
-        const normalized = await loadSkinImageUrl(texUrl);
-        baseSkinCanvasRef.current = normalized;
-        setActiveUsername(resolvedName);
-        setSlimModel(detectedSlim);
-        setSkinRevision((r) => r + 1);
+        const meta = metaOutcome.status === 'fulfilled' ? metaOutcome.value : null;
+        const resolvedName = meta?.name || clean;
+        const detectedSlim = Boolean(meta?.slim);
+        setRawUuid(meta?.rawUuid || null);
+
+        if (texOutcome.status === 'fulfilled') {
+          baseSkinCanvasRef.current = texOutcome.value;
+          setActiveUsername(resolvedName);
+          setSlimModel(detectedSlim);
+          setSkinRevision((r) => r + 1);
+        } else {
+          throw texOutcome.reason;
+        }
       } catch {
-        // Ensure a working Steve skin is loaded if Mojang/network is unreachable
         if (!baseSkinCanvasRef.current) {
           baseSkinCanvasRef.current = buildDefaultSteveCanvas();
-          setSkinRevision((r) => r + 1);
         }
-        setErrorMsg(`Could not fetch "${clean}" skin texture right now. Showing fallback Steve skin.`);
+        setActiveUsername(clean);
+        setSkinRevision((r) => r + 1);
+        setErrorMsg(`Showing fallback Steve skin for "${clean}" (upstream skin unreachable).`);
       } finally {
         setLoading(false);
       }
@@ -533,18 +571,19 @@ export const MinecraftSkinViewer: React.FC<MinecraftSkinViewerProps> = ({
 
     // Character Skin Texture & Articulated Rig
     const baseCanvas = baseSkinCanvasRef.current || buildDefaultSteveCanvas();
-    const processedCanvas = createProcessedSkinCanvas(baseCanvas, mirrored, slimModel);
+    const processedCanvas = createProcessedSkinCanvas(baseCanvas, mirroredRef.current, slimModel);
     const skinTexture = new THREE.CanvasTexture(processedCanvas);
     skinTexture.colorSpace = THREE.SRGBColorSpace;
     skinTexture.magFilter = THREE.NearestFilter;
     skinTexture.minFilter = THREE.NearestFilter;
     skinTexture.generateMipmaps = false;
+    skinTexture.needsUpdate = true;
 
+    // Base inner layer MUST remain completely opaque (no alphaTest) so limbs/torso never cull away
     const innerMat = new THREE.MeshStandardMaterial({
       map: skinTexture,
       roughness: 0.88,
       metalness: 0.04,
-      alphaTest: 0.1,
     });
 
     const outerMat = new THREE.MeshStandardMaterial({
@@ -1153,7 +1192,13 @@ export const MinecraftSkinViewer: React.FC<MinecraftSkinViewerProps> = ({
 
       {/* Main Viewport: 3D WebGL or 2D Front/Back + UV Sheet */}
       {viewMode === '3d' ? (
-        <div className="relative overflow-hidden rounded-xl border border-zinc-800 bg-[#09090d]">
+        <div
+          className="relative overflow-hidden rounded-xl border border-zinc-800 bg-[#09090d]"
+          data-testid="skin-viewer-3d"
+          data-skin-username={activeUsername}
+          data-skin-revision={skinRevision}
+          data-skin-model={slimModel ? 'slim' : 'classic'}
+        >
           <div
             ref={threeHostRef}
             className="h-[380px] sm:h-[430px] w-full cursor-grab active:cursor-grabbing"

@@ -197,8 +197,12 @@ export function resolveDisplayIdentity(params: {
     providerData: FirebaseProviderSnapshot[];
   } | null;
   primaryOAuth: ConnectedAccountInfo | null;
+  preferredMcAvatarUrl?: string | null;
 }): DisplayIdentity {
-  const { firebaseUser, primaryOAuth } = params;
+  const { firebaseUser, primaryOAuth, preferredMcAvatarUrl } = params;
+  const cleanPreferred = preferredMcAvatarUrl
+    ? clampString(preferredMcAvatarUrl, BLUEPRINT_LIMITS.URL_MAX)
+    : null;
 
   if (firebaseUser) {
     const fallbackName =
@@ -212,7 +216,7 @@ export function resolveDisplayIdentity(params: {
       uid: firebaseUser.uid,
       displayName: clampString(fallbackName, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || 'SwxMember',
       email: firebaseUser.email,
-      avatarUrl: firebaseUser.photoURL,
+      avatarUrl: firebaseUser.photoURL || cleanPreferred || null,
       initials: computeInitials(fallbackName),
       emailVerified: firebaseUser.emailVerified,
       isFirebaseUser: true,
@@ -227,7 +231,7 @@ export function resolveDisplayIdentity(params: {
       uid: null,
       displayName: clampString(name, BLUEPRINT_LIMITS.DISPLAY_NAME_MAX) || primaryOAuth.provider,
       email: primaryOAuth.email,
-      avatarUrl: primaryOAuth.avatarUrl,
+      avatarUrl: cleanPreferred || primaryOAuth.avatarUrl,
       initials: computeInitials(name),
       emailVerified: false,
       isFirebaseUser: false,

@@ -12,6 +12,8 @@ import {
   isValidMinecraftUsername,
   normalizeMinecraftUsername,
   pixelRectToUvBounds,
+  POPULAR_MINECRAFT_HEADS,
+  resolveAuthMinecraftAvatarChoice,
 } from './skinLogic';
 
 test('normalizeMinecraftUsername and isValidMinecraftUsername handle valid & invalid IGNs', () => {
@@ -35,6 +37,39 @@ test('buildMinecraftHeadAvatarUrl and extraction round-trip cleanly', () => {
   assert.equal(isMinecraftAvatarUrl(url), true);
   assert.equal(extractMinecraftUsernameFromAvatarUrl(url), 'Notch');
   assert.equal(buildMinecraftSkinTextureUrl('Dinnerbone'), '/api/mc/skin/Dinnerbone');
+});
+
+test('resolveAuthMinecraftAvatarChoice handles signup, signin, 3d head style, and opt-out', () => {
+  assert.equal(POPULAR_MINECRAFT_HEADS.length >= 5, true);
+  assert.equal(
+    resolveAuthMinecraftAvatarChoice({
+      mode: 'signup',
+      useMcHeadAvatar: false,
+      mcUsername: 'Notch',
+    }),
+    null
+  );
+  assert.equal(
+    resolveAuthMinecraftAvatarChoice({
+      mode: 'signup',
+      useMcHeadAvatar: true,
+      displayName: 'SwxBuilder',
+      style: '3d',
+      origin: 'https://swx.test',
+    }),
+    'https://swx.test/api/mc/avatar/SwxBuilder?s=128&style=3d'
+  );
+  assert.equal(
+    resolveAuthMinecraftAvatarChoice({
+      mode: 'signin',
+      useMcHeadAvatar: true,
+      mcUsername: '',
+      email: 'dream@smp.net',
+      style: '2d',
+      origin: 'https://swx.test',
+    }),
+    'https://swx.test/api/mc/avatar/dream?s=128'
+  );
 });
 
 test('getCharacterSkinParts returns exact Mojang 64x64 UV rectangles for classic and slim models', () => {

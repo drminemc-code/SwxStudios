@@ -241,6 +241,22 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                 <span aria-hidden="true">·</span>
                 <span className="tabular-nums">{connectedCount} connected</span>
               </div>
+              {identity.uid && (
+                <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-zinc-500">
+                  <span>UID:</span>
+                  <code className="max-w-[160px] truncate font-display-mono text-zinc-300">
+                    {identity.uid}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyUri(identity.uid!)}
+                    className="inline-flex items-center gap-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 text-[10px] text-zinc-300 hover:border-zinc-600"
+                  >
+                    <Copy className="h-2.5 w-2.5" aria-hidden="true" />
+                    <span>{copiedUri ? 'Copied' : 'Copy'}</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -413,7 +429,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
                   aria-label="Minecraft Java username for profile avatar"
                   className="h-9 min-w-0 flex-1 rounded-md border border-zinc-800 bg-[#0b0b0e] px-3 font-display-mono text-xs text-zinc-100 focus:border-rose-500/60 focus:outline-none"
                 />
-                {identity.isFirebaseUser && onUpdateAvatarUrl && (
+                {onUpdateAvatarUrl && (
                   <button
                     type="button"
                     disabled={busyAction !== null}

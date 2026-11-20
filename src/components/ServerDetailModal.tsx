@@ -4,6 +4,7 @@ import {
   Check,
   Copy,
   Gauge,
+  Map as MapIcon,
   RefreshCw,
   Server,
   Star,
@@ -24,6 +25,7 @@ import {
   classifyTpsHealth,
   parseTopPlayerEntry,
 } from '../utils/mcToolsLogic';
+import { buildMinecraftHeadAvatarUrl } from '../utils/skinLogic';
 import { MinecraftFormattedText } from './MinecraftTextPreview';
 
 interface ServerDetailModalProps {
@@ -35,6 +37,7 @@ interface ServerDetailModalProps {
   onRefreshLive: (server: MinecraftServerListing) => Promise<void>;
   onVote: (serverId: string) => Promise<void>;
   onCopyAddress: (address: string) => void;
+  onExploreMap?: (server: MinecraftServerListing) => void;
   onSaveTelemetry?: (
     server: MinecraftServerListing,
     updates: {
@@ -57,6 +60,7 @@ export const ServerDetailModal: React.FC<ServerDetailModalProps> = ({
   onRefreshLive,
   onVote,
   onCopyAddress,
+  onExploreMap,
   onSaveTelemetry,
 }) => {
   const [activeTab, setActiveTab] = useState<DetailTab>('overview');
@@ -123,7 +127,19 @@ export const ServerDetailModal: React.FC<ServerDetailModalProps> = ({
     try {
       await navigator.clipboard.writeText(value);
     } catch {
-      // Fallback handled by toast callback
+      try {
+        const el = document.createElement('textarea');
+        el.value = value;
+        el.setAttribute('readonly', '');
+        el.style.position = 'fixed';
+        el.style.opacity = '0';
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+      } catch {
+        // Fallback handled by toast callback
+      }
     }
     setCopiedKey(key);
     onCopyAddress(value);
@@ -249,6 +265,17 @@ export const ServerDetailModal: React.FC<ServerDetailModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {onExploreMap && (
+              <button
+                type="button"
+                onClick={() => onExploreMap(server)}
+                className="inline-flex h-9 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-900 px-3 text-xs font-semibold text-zinc-200 hover:border-emerald-500/60 hover:text-emerald-200"
+              >
+                <MapIcon className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+                <span>Explore Map</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => void onRefreshLive(server)}
@@ -456,35 +483,61 @@ export const ServerDetailModal: React.FC<ServerDetailModalProps> = ({
                     Connection Addresses
                   </h3>
 
-                  <div>
+                  <div className="relative">
                     <span className="text-[11px] text-zinc-500">Java / Primary IP</span>
+                    {copiedKey === 'java-ip' && (
+                      <span
+                        role="status"
+                        className="pointer-events-none absolute right-2 top-0 inline-flex items-center gap-1 rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300"
+                      >
+                        <Check className="h-3 w-3" aria-hidden="true" />
+                        <span>Copied!</span>
+                      </span>
+                    )}
                     <button
                       type="button"
                       onClick={() => void handleCopy('java-ip', server.address)}
-                      className="mt-1 flex w-full items-center justify-between rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-display-mono text-xs text-white hover:border-rose-500/60"
+                      className={`mt-1 flex w-full items-center justify-between rounded-md border px-3 py-2 font-display-mono text-xs transition-colors ${
+                        copiedKey === 'java-ip'
+                          ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-200'
+                          : 'border-zinc-700 bg-zinc-950 text-white hover:border-rose-500/60'
+                      }`}
                     >
                       <span className="truncate">{server.address}</span>
                       {copiedKey === 'java-ip' ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                        <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
                       ) : (
-                        <Copy className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+                        <Copy className="h-3.5 w-3.5 text-zinc-400 shrink-0" aria-hidden="true" />
                       )}
                     </button>
                   </div>
 
                   {server.bedrockAddress && (
-                    <div>
+                    <div className="relative">
                       <span className="text-[11px] text-zinc-500">Bedrock Address</span>
+                      {copiedKey === 'bedrock-ip' && (
+                        <span
+                          role="status"
+                          className="pointer-events-none absolute right-2 top-0 inline-flex items-center gap-1 rounded bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300"
+                        >
+                          <Check className="h-3 w-3" aria-hidden="true" />
+                          <span>Copied!</span>
+                        </span>
+                      )}
                       <button
                         type="button"
                         onClick={() => void handleCopy('bedrock-ip', server.bedrockAddress!)}
-                        className="mt-1 flex w-full items-center justify-between rounded-md border border-zinc-700 bg-zinc-950 px-3 py-2 font-display-mono text-xs text-white hover:border-rose-500/60"
+                        className={`mt-1 flex w-full items-center justify-between rounded-md border px-3 py-2 font-display-mono text-xs transition-colors ${
+                          copiedKey === 'bedrock-ip'
+                            ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-200'
+                            : 'border-zinc-700 bg-zinc-950 text-white hover:border-rose-500/60'
+                        }`}
                       >
                         <span className="truncate">{server.bedrockAddress}</span>
                         {copiedKey === 'bedrock-ip' ? (
-                          <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                          <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
                         ) : (
-                          <Copy className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+                          <Copy className="h-3.5 w-3.5 text-zinc-400 shrink-0" aria-hidden="true" />
                         )}
                       </button>
                     </div>
@@ -504,6 +557,12 @@ export const ServerDetailModal: React.FC<ServerDetailModalProps> = ({
                           <span className="font-display-mono text-zinc-200">{liveStatus.ip}</span>
                         </div>
                       )}
+                      <div className="flex justify-between">
+                        <span>Probe Location:</span>
+                        <span className="font-display-mono text-emerald-300">
+                          {liveStatus.probeLocation || 'Asia (Singapore)'}
+                        </span>
+                      </div>
                       {liveStatus.checkedAt && (
                         <div className="flex justify-between">
                           <span>Checked:</span>
@@ -546,7 +605,7 @@ export const ServerDetailModal: React.FC<ServerDetailModalProps> = ({
                           className="inline-flex items-center gap-1.5 rounded border border-zinc-800 bg-zinc-950 px-2 py-1 text-xs text-zinc-200"
                         >
                           <img
-                            src={`https://mc-heads.net/avatar/${encodeURIComponent(name)}/20`}
+                            src={buildMinecraftHeadAvatarUrl(name, { size: 24 })}
                             alt=""
                             className="h-4 w-4 rounded-sm"
                           />
@@ -722,7 +781,7 @@ export const ServerDetailModal: React.FC<ServerDetailModalProps> = ({
                         <div className="flex items-center gap-2.5 min-w-0">
                           <span className="font-display-mono w-5 text-zinc-500">#{idx + 1}</span>
                           <img
-                            src={`https://mc-heads.net/avatar/${encodeURIComponent(entry.name)}/24`}
+                            src={buildMinecraftHeadAvatarUrl(entry.name, { size: 24 })}
                             alt=""
                             className="h-6 w-6 rounded border border-zinc-700"
                           />
@@ -765,7 +824,7 @@ export const ServerDetailModal: React.FC<ServerDetailModalProps> = ({
                         className="flex items-center gap-2 rounded-md border border-zinc-800/80 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-200"
                       >
                         <img
-                          src={`https://mc-heads.net/avatar/${encodeURIComponent(p.name)}/24`}
+                          src={buildMinecraftHeadAvatarUrl(p.name, { size: 24 })}
                           alt=""
                           className="h-5 w-5 rounded-sm"
                         />

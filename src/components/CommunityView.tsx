@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ArrowBigUp, MessageSquare, Plus, Send } from 'lucide-react';
 import { CommunityThread } from '../types';
 
@@ -40,6 +40,12 @@ export const CommunityView: React.FC<CommunityViewProps> = ({
   const [newBody, setNewBody] = useState('');
   const [openThreadId, setOpenThreadId] = useState<string | null>(threads[0]?.id ?? null);
   const [replyText, setReplyText] = useState('');
+
+  useEffect(() => {
+    if (!openThreadId && threads.length > 0) {
+      setOpenThreadId(threads[0].id);
+    }
+  }, [threads, openThreadId]);
 
   const visibleThreads =
     selectedTopic === 'All'

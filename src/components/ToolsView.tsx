@@ -43,12 +43,16 @@ import {
   convertTextFormat,
   generateHexGradient,
   MC_COLOR_MAP,
+  PROBE_REGIONS,
+  resolveProbeRegionInfo,
   TextConverterTarget,
   toServerPropertiesMotd,
   validateJsonText,
   validateYamlBasic,
   xpPointsForLevel,
 } from '../utils/mcToolsLogic';
+import { ProbeRegionId } from '../types';
+import { buildMinecraftHeadAvatarUrl } from '../utils/skinLogic';
 import { LiveMotdCard, MinecraftFormattedText } from './MinecraftTextPreview';
 import { ToolsExtendedPanels } from './ToolsExtendedPanels';
 
@@ -400,6 +404,8 @@ interface ServerStatusResult {
   version: string | null;
   software: string | null;
   pingMs?: number | null;
+  probeRegion?: string;
+  probeLocation?: string;
   playersOnline: number;
   playersMax: number;
   playerSample?: Array<{ uuid: string; name: string }>;
@@ -566,25 +572,32 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
   };
 
   // --- Server Status Checker State ---
-  const [statusHost, setStatusHost] = useState('play.hypixel.net');
+  const [statusHost, setStatusHost] = useState('donutsmp.net');
   const [statusEdition, setStatusEdition] = useState<'java' | 'bedrock'>('java');
+  const [statusRegion, setStatusRegion] = useState<ProbeRegionId>('asia');
   const [statusLoading, setStatusLoading] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusResult, setStatusResult] = useState<ServerStatusResult | null>(null);
   const statusAutoCheckedRef = useRef(false);
 
-  const runStatusCheck = async (targetHost: string, edition: 'java' | 'bedrock', fresh = false) => {
+  const runStatusCheck = async (
+    targetHost: string,
+    edition: 'java' | 'bedrock',
+    fresh = false,
+    regionOverride?: ProbeRegionId
+  ) => {
     const trimmed = targetHost.trim();
     if (!trimmed) {
       setStatusError('Enter a valid Minecraft server IP or domain.');
       return;
     }
+    const targetRegion = regionOverride || statusRegion;
     setStatusHost(trimmed);
     setStatusError(null);
     setStatusLoading(true);
     try {
       const res = await fetch(
-        `/api/mc/status?host=${encodeURIComponent(trimmed)}&edition=${edition}${fresh ? '&fresh=1' : ''}`
+        `/api/mc/status?host=${encodeURIComponent(trimmed)}&edition=${edition}&region=${encodeURIComponent(targetRegion)}${fresh ? '&fresh=1' : ''}`
       );
       const data = (await res.json()) as ServerStatusResult & { error?: string };
       if (!res.ok) {
@@ -868,8 +881,8 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
       ) : (
         /* Focused Split Tool Workbench */
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-12">
-          {/* Left Selector Rail */}
-          <aside className="lg:col-span-4 space-y-2 lg:max-h-[calc(100vh-13rem)] lg:overflow-y-auto lg:pr-1">
+          {/* Left Selector Rail (appears below active workbench on mobile) */}
+          <aside className="order-2 lg:order-1 lg:col-span-4 space-y-2 lg:max-h-[calc(100vh-13rem)] lg:overflow-y-auto lg:pr-1">
             {filteredTools.length === 0 ? (
               <div className="rounded-lg border border-zinc-800 bg-[#111114] p-6 text-center text-xs text-zinc-500">
                 No tools match your search.
@@ -882,7 +895,10 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
                     <button
                       key={tool.id}
                       type="button"
-                      onClick={() => setSelectedTool(tool.id)}
+                      onClick={() => {
+                        setSelectedTool(tool.id);
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
                       aria-current={active ? 'true' : undefined}
                       className={`flex items-start gap-3 rounded-lg border p-3.5 text-left transition-colors ${
                         active
@@ -912,7 +928,7 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
           </aside>
 
           {/* Right Interactive Workbench */}
-          <div className="lg:col-span-8 lg:sticky lg:top-20 lg:self-start">
+          <div className="order-1 lg:order-2 lg:col-span-8 lg:sticky lg:top-20 lg:self-start">
             <div className="rounded-xl border border-zinc-800/90 bg-[#111114] p-5 sm:p-6">
               <div className="flex items-start justify-between gap-3 border-b border-zinc-800/80 pb-4">
                 <div>
@@ -1523,7 +1539,7 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
                     type="text"
                     value={statusHost}
                     onChange={(e) => setStatusHost(e.target.value)}
-                    placeholder="play.hypixel.net"
+                    placeholder="donutsmp.net"
                     aria-label="Minecraft server address"
                     className="h-10 flex-1 rounded-md border border-zinc-800 bg-zinc-950 px-3 font-display-mono text-xs text-zinc-100 focus:border-rose-500 focus:outline-none"
                   />
@@ -1535,6 +1551,22 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
                   >
                     <option value="java">Java Edition</option>
                     <option value="bedrock">Bedrock Edition</option>
+                  </select>
+                  <select
+                    value={statusRegion}
+                    onChange={(e) => {
+                      const next = e.target.value as ProbeRegionId;
+                      setStatusRegion(next);
+                      void runStatusCheck(statusHost, statusEdition, true, next);
+                    }}
+                    aria-label="Probe location"
+                    className="h-10 rounded-md border border-zinc-800 bg-zinc-950 px-3 text-xs font-semibold text-emerald-300"
+                  >
+                    {PROBE_REGIONS.map((region) => (
+                      <option key={region.id} value={region.id} className="bg-zinc-950 text-zinc-100">
+                        {region.label}
+                      </option>
+                    ))}
                   </select>
                   <button
                     type="submit"
@@ -1548,10 +1580,10 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                   <span className="text-zinc-500">Live Servers:</span>
                   {[
+                    'donutsmp.net',
+                    'mcpvp.club',
+                    'acersmp.xyz',
                     'play.hypixel.net',
-                    'hazzardsmp.ultramc.co',
-                    'syvoxsmp.playwithbao.com',
-                    'ecoverprac.minefort.com',
                   ].map((hostPreset) => (
                     <button
                       key={hostPreset}
@@ -1587,7 +1619,10 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
                           </p>
                           <p className="text-xs text-zinc-400">
                             {statusResult.software || statusResult.edition.toUpperCase()} ·{' '}
-                            {statusResult.version || 'Unknown version'}
+                            {statusResult.version || 'Unknown version'} ·{' '}
+                            <span className="text-emerald-300">
+                              {statusResult.probeLocation || resolveProbeRegionInfo(statusRegion).label}
+                            </span>
                             {statusResult.resolvedHost && statusResult.resolvedHost !== statusResult.host
                               ? ` · SRV ${statusResult.resolvedHost}`
                               : ''}
@@ -1643,7 +1678,7 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
                                 className="inline-flex items-center gap-1.5 rounded border border-zinc-800 bg-zinc-950 px-2 py-1 text-[11px] text-zinc-200"
                               >
                                 <img
-                                  src={`https://mc-heads.net/avatar/${encodeURIComponent(p.name)}/16`}
+                                  src={buildMinecraftHeadAvatarUrl(p.name, { size: 20 })}
                                   alt={p.name}
                                   className="h-4 w-4 rounded-sm"
                                   loading="lazy"
@@ -1705,12 +1740,21 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
                     <img
                       src={uuidResult.skinRenderUrl}
                       alt={`${uuidResult.name} skin`}
+                      onError={(e) => {
+                        const fallback = buildMinecraftHeadAvatarUrl(uuidResult.name, {
+                          size: 160,
+                          style: '3d',
+                        });
+                        if (e.currentTarget.src !== fallback) {
+                          e.currentTarget.src = fallback;
+                        }
+                      }}
                       className="h-36 w-auto shrink-0 rounded border border-zinc-800 bg-[#0b0b0e] p-2 object-contain"
                     />
                     <div className="min-w-0 flex-1 space-y-3">
                       <div className="flex items-center gap-2.5">
                         <img
-                          src={uuidResult.avatarUrl}
+                          src={buildMinecraftHeadAvatarUrl(uuidResult.name, { size: 64 })}
                           alt=""
                           className="h-8 w-8 rounded border border-zinc-700"
                         />

@@ -4,7 +4,13 @@ import dns from 'dns';
 import fs from 'fs';
 import net from 'net';
 import path from 'path';
+import zlib from 'zlib';
 import express, { type Request, type Response } from 'express';
+import {
+  DEFAULT_CHALLENGE_DIFFICULTY,
+  generateRayId,
+  verifyChallengeProof,
+} from './src/utils/botVerifyLogic';
 
 type OAuthProviderId = 'discord' | 'github' | 'twitch';
 
@@ -99,12 +105,32 @@ interface UnifiedMcStatusPayload {
   version: string | null;
   software: string | null;
   pingMs: number | null;
+  probeRegion: string;
+  probeLocation: string;
   playersOnline: number;
   playersMax: number;
   playerSample: SlpPlayerSample[];
   motdLines: string[];
   iconBase64: string | null;
   checkedAt: string;
+}
+
+function resolveServerProbeRegion(raw?: string): {
+  id: 'asia' | 'global' | 'na' | 'eu';
+  location: string;
+} {
+  const norm = (raw || '').trim().toLowerCase();
+  switch (norm) {
+    case 'global':
+      return { id: 'global', location: 'Global Anycast' };
+    case 'na':
+      return { id: 'na', location: 'North America' };
+    case 'eu':
+      return { id: 'eu', location: 'Europe' };
+    case 'asia':
+    default:
+      return { id: 'asia', location: 'Asia (Singapore)' };
+  }
 }
 
 const mcStatusCache = new Map<string, { expiresAt: number; payload: UnifiedMcStatusPayload }>();
@@ -234,9 +260,14 @@ async function directJavaSlpPing(rawHost: string): Promise<{
   return new Promise((resolve) => {
     const socket = net.createConnection({ host: targetHost, port: targetPort, timeout: 4200 });
     let finished = false;
+    let pongTimer: ReturnType<typeof setTimeout> | null = null;
     const done = (result: Awaited<ReturnType<typeof directJavaSlpPing>>) => {
       if (finished) return;
       finished = true;
+      if (pongTimer) {
+        clearTimeout(pongTimer);
+        pongTimer = null;
+      }
       socket.destroy();
       resolve(result);
     };
@@ -296,13 +327,18 @@ async function directJavaSlpPing(rawHost: string): Promise<{
             return;
           }
 
-          // Measure exact SLP Ping-Pong round-trip latency
+          // Measure exact SLP Ping-Pong round-trip latency; resolve with TCP RTT if remote proxy ignores 0x01
           const pingPayload = Buffer.alloc(10);
           pingPayload[0] = 0x09;
           pingPayload[1] = 0x01;
           pingPayload.writeBigInt64BE(BigInt(Date.now()), 2);
           pingSentAt = performance.now();
           socket.write(pingPayload);
+          if (!pongTimer) {
+            pongTimer = setTimeout(() => {
+              finalizePartial();
+            }, 350);
+          }
         } else if (pktId.val === 0x01 && parsedJson) {
           const rttMs = Math.max(1, Math.round(performance.now() - pingSentAt));
           const motdFull = flattenChatComponent(parsedJson.description);
@@ -375,6 +411,42 @@ async function directJavaSlpPing(rawHost: string): Promise<{
     socket.once('end', finalizePartial);
     socket.once('timeout', finalizePartial);
     socket.once('error', () => done(null));
+  });
+}
+
+async function measureTcpRttMs(rawHost: string, defaultPort = 25565): Promise<number | null> {
+  const colonIdx = rawHost.lastIndexOf(':');
+  let targetHost = colonIdx > 0 ? rawHost.slice(0, colonIdx) : rawHost;
+  let targetPort = colonIdx > 0 ? Number(rawHost.slice(colonIdx + 1)) || defaultPort : defaultPort;
+
+  if (colonIdx === -1 && defaultPort === 25565) {
+    try {
+      const srvRecords = await dns.promises.resolveSrv(`_minecraft._tcp.${targetHost}`);
+      if (srvRecords && srvRecords.length > 0) {
+        srvRecords.sort((a, b) => a.priority - b.priority);
+        targetHost = srvRecords[0].name.replace(/\.$/, '');
+        targetPort = srvRecords[0].port || defaultPort;
+      }
+    } catch {
+      // Ignore SRV lookup failures
+    }
+  }
+
+  return new Promise((resolve) => {
+    const started = performance.now();
+    const sock = net.createConnection({ host: targetHost, port: targetPort, timeout: 1500 });
+    let closed = false;
+    const finish = (val: number | null) => {
+      if (closed) return;
+      closed = true;
+      sock.destroy();
+      resolve(val);
+    };
+    sock.once('connect', () => {
+      finish(Math.max(1, Math.round(performance.now() - started)));
+    });
+    sock.once('timeout', () => finish(null));
+    sock.once('error', () => finish(null));
   });
 }
 
@@ -827,7 +899,125 @@ async function exchangeTwitchCode(config: ProviderConfig, code: string, redirect
 
 async function createApp() {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(express.json());
+
+  const BOT_VERIFY_COOKIE_NAME = 'swx_human_verified';
+
+  // 0. Cloudflare-Style Turnstile Bot Verification Routes (HMAC cookie + proof-of-work)
+  app.get('/api/verify/status', (req: Request, res: Response) => {
+    const cookies = parseCookies(req.headers.cookie);
+    const session = verifyToken<{
+      verified: boolean;
+      rayId: string;
+      verifiedAt: string;
+      exp: number;
+    }>(cookies[BOT_VERIFY_COOKIE_NAME]);
+
+    if (session && session.verified && typeof session.exp === 'number' && Date.now() < session.exp) {
+      res.json({
+        verified: true,
+        rayId: session.rayId,
+        verifiedAt: session.verifiedAt,
+        expiresAt: session.exp,
+      });
+      return;
+    }
+
+    res.json({
+      verified: false,
+      rayId: generateRayId(`${req.ip || 'client'}-${Date.now()}`),
+      verifiedAt: null,
+      expiresAt: null,
+    });
+  });
+
+  app.get('/api/verify/challenge', (req: Request, res: Response) => {
+    const nonce = crypto.randomBytes(12).toString('hex');
+    const rayId = generateRayId(`${nonce}-${req.ip || 'swx'}`);
+    const issuedAt = Date.now();
+    const exp = issuedAt + 5 * 60_000;
+    const difficulty = DEFAULT_CHALLENGE_DIFFICULTY;
+
+    const challengeToken = signToken({
+      nonce,
+      rayId,
+      difficulty,
+      issuedAt,
+      exp,
+    });
+
+    res.json({
+      challengeToken,
+      nonce,
+      difficulty,
+      rayId,
+      issuedAt,
+    });
+  });
+
+  app.post('/api/verify/submit', (req: Request, res: Response) => {
+    const body = (req.body || {}) as {
+      challengeToken?: string;
+      counter?: number;
+      humanInteraction?: boolean;
+      elapsedMs?: number;
+    };
+
+    const parsedChallenge = verifyToken<{
+      nonce: string;
+      rayId: string;
+      difficulty: number;
+      issuedAt: number;
+      exp: number;
+    }>(body.challengeToken);
+
+    if (!parsedChallenge || Date.now() > parsedChallenge.exp) {
+      res.status(400).json({ ok: false, verified: false, error: 'Verification challenge expired. Please retry.' });
+      return;
+    }
+
+    if (body.humanInteraction !== true) {
+      res.status(403).json({ ok: false, verified: false, error: 'Human interaction is required.' });
+      return;
+    }
+
+    const counter = typeof body.counter === 'number' ? body.counter : Number(body.counter);
+    if (!verifyChallengeProof(parsedChallenge.nonce, counter, parsedChallenge.difficulty)) {
+      res.status(403).json({ ok: false, verified: false, error: 'Invalid verification proof. Please retry.' });
+      return;
+    }
+
+    const verifiedAt = new Date().toISOString();
+    const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+    const sessionToken = signToken({
+      verified: true,
+      rayId: parsedChallenge.rayId,
+      verifiedAt,
+      exp: expiresAt,
+    });
+
+    res.cookie(BOT_VERIFY_COOKIE_NAME, sessionToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      maxAge: 24 * 60 * 60 * 1000,
+      path: '/',
+    });
+
+    res.json({
+      ok: true,
+      verified: true,
+      rayId: parsedChallenge.rayId,
+      verifiedAt,
+      expiresAt,
+    });
+  });
+
+  app.post('/api/verify/reset', (_req: Request, res: Response) => {
+    clearCookieIframeSafe(res, BOT_VERIFY_COOKIE_NAME);
+    res.json({ ok: true, verified: false });
+  });
 
   // 1. OAuth configuration status & exact callback URLs
   app.get('/api/oauth/status', (_req: Request, res: Response) => {
@@ -1164,18 +1354,21 @@ async function createApp() {
     res.json({ ok: true });
   });
 
-  // 10. Real Minecraft Server Status lookup (Direct Java SLP TCP + mcstatus.io / mcsrvstat.us fallback)
+  // 10. Real Minecraft Server Status lookup (Direct Java SLP TCP from Asia SG + mcstatus.io / mcsrvstat.us fallback)
   app.get('/api/mc/status', async (req: Request, res: Response) => {
     const rawHost = typeof req.query.host === 'string' ? req.query.host.trim() : '';
     const edition: 'java' | 'bedrock' = req.query.edition === 'bedrock' ? 'bedrock' : 'java';
+    const regionInfo = resolveServerProbeRegion(
+      typeof req.query.region === 'string' ? req.query.region : undefined
+    );
     const bypassCache = req.query.fresh === '1';
 
     if (!rawHost || !/^[a-zA-Z0-9.-]+(:\d{1,5})?$/.test(rawHost) || rawHost.length > 120) {
-      res.status(400).json({ error: 'Enter a valid server hostname or IP:port (e.g. play.hypixel.net).' });
+      res.status(400).json({ error: 'Enter a valid server hostname or IP:port (e.g. donutsmp.net).' });
       return;
     }
 
-    const cacheKey = `${edition}:${rawHost.toLowerCase()}`;
+    const cacheKey = `${edition}:${regionInfo.id}:${rawHost.toLowerCase()}`;
     const cached = mcStatusCache.get(cacheKey);
     if (!bypassCache && cached && cached.expiresAt > Date.now()) {
       res.json(cached.payload);
@@ -1198,6 +1391,8 @@ async function createApp() {
             version: slp.version,
             software: slp.software,
             pingMs: slp.pingMs,
+            probeRegion: regionInfo.id,
+            probeLocation: regionInfo.location,
             playersOnline: slp.playersOnline,
             playersMax: slp.playersMax,
             playerSample: slp.playerSample,
@@ -1219,7 +1414,7 @@ async function createApp() {
             ? `https://api.mcsrvstat.us/bedrock/3/${encodeURIComponent(rawHost)}`
             : `https://api.mcsrvstat.us/3/${encodeURIComponent(rawHost)}`;
 
-        const [mcRes, srvRes] = await Promise.allSettled([
+        const [mcRes, srvRes, tcpRes] = await Promise.allSettled([
           fetch(mcstatusUrl, {
             headers: { 'User-Agent': 'SwxStudios/1.0' },
             signal: AbortSignal.timeout(6500),
@@ -1228,9 +1423,13 @@ async function createApp() {
             headers: { 'User-Agent': 'SwxStudios/1.0' },
             signal: AbortSignal.timeout(6500),
           }),
+          measureTcpRttMs(rawHost, edition === 'bedrock' ? 19132 : 25565),
         ]);
 
-        const fallbackLatency = Math.max(12, Math.round(performance.now() - t0));
+        const fallbackLatency =
+          tcpRes.status === 'fulfilled' && typeof tcpRes.value === 'number'
+            ? tcpRes.value
+            : Math.max(12, Math.round(performance.now() - t0));
 
         if (mcRes.status === 'fulfilled' && mcRes.value.ok) {
           const d = (await mcRes.value.json()) as {
@@ -1271,6 +1470,8 @@ async function createApp() {
             version: versionStr,
             software: d.software || inferSoftwareFromVersion(versionStr),
             pingMs: d.online ? fallbackLatency : null,
+            probeRegion: regionInfo.id,
+            probeLocation: regionInfo.location,
             playersOnline: typeof d.players?.online === 'number' ? d.players.online : 0,
             playersMax: typeof d.players?.max === 'number' ? d.players.max : 0,
             playerSample,
@@ -1315,6 +1516,8 @@ async function createApp() {
             version: data.version || null,
             software: data.software || inferSoftwareFromVersion(data.version || null),
             pingMs: data.online ? fallbackLatency : null,
+            probeRegion: regionInfo.id,
+            probeLocation: regionInfo.location,
             playersOnline: typeof data.players?.online === 'number' ? data.players.online : 0,
             playersMax: typeof data.players?.max === 'number' ? data.players.max : 0,
             playerSample,
@@ -1349,7 +1552,11 @@ async function createApp() {
   // 10b. Live Server Plugin Telemetry (TPS, MSPT, Ping, Players, Top Players)
   app.get('/api/mc/telemetry', (_req: Request, res: Response) => {
     const items = Array.from(telemetryStore.values());
-    res.json({ items });
+    const snapshots: Record<string, ServerTelemetryRecord> = {};
+    for (const [k, v] of telemetryStore.entries()) {
+      snapshots[k] = v;
+    }
+    res.json({ items, snapshots });
   });
 
   app.get('/api/mc/telemetry/:serverKey', (req: Request, res: Response) => {
@@ -1436,9 +1643,155 @@ async function createApp() {
         dashedUuid: string;
         skinUrl: string | null;
         slim: boolean;
-      };
+      } | null;
     }
   >();
+
+  const mcSkinCache = new Map<string, { expiresAt: number; buffer: Buffer }>();
+  const mcAvatarCache = new Map<string, { expiresAt: number; buffer: Buffer }>();
+
+  const encodeRgbaToPng = (width: number, height: number, rgba: Uint8Array): Buffer => {
+    const raw = Buffer.alloc(height * (1 + width * 4));
+    for (let y = 0; y < height; y++) {
+      const rowOffset = y * (1 + width * 4);
+      raw[rowOffset] = 0; // filter None
+      const srcStart = y * width * 4;
+      raw.set(rgba.subarray(srcStart, srcStart + width * 4), rowOffset + 1);
+    }
+
+    const crc32 = (buf: Buffer): number => {
+      let crc = 0xffffffff;
+      for (let i = 0; i < buf.length; i++) {
+        crc ^= buf[i];
+        for (let b = 0; b < 8; b++) {
+          crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+        }
+      }
+      return (crc ^ 0xffffffff) >>> 0;
+    };
+
+    const chunk = (type: string, data: Buffer): Buffer => {
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(data.length, 0);
+      const typeBuf = Buffer.from(type, 'ascii');
+      const crcBuf = Buffer.alloc(4);
+      crcBuf.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])), 0);
+      return Buffer.concat([len, typeBuf, data, crcBuf]);
+    };
+
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(width, 0);
+    ihdr.writeUInt32BE(height, 4);
+    ihdr[8] = 8; // bit depth
+    ihdr[9] = 6; // RGBA
+    ihdr[10] = 0;
+    ihdr[11] = 0;
+    ihdr[12] = 0;
+
+    return Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      chunk('IHDR', ihdr),
+      chunk('IDAT', zlib.deflateSync(raw)),
+      chunk('IEND', Buffer.alloc(0)),
+    ]);
+  };
+
+  let cachedFallbackSkinPng: Buffer | null = null;
+  const getFallbackSteveSkinPng = (): Buffer => {
+    if (cachedFallbackSkinPng) return cachedFallbackSkinPng;
+    const rgba = new Uint8Array(64 * 64 * 4);
+    const fillRect = (rx: number, ry: number, rw: number, rh: number, r: number, g: number, b: number, a = 255) => {
+      for (let y = ry; y < ry + rh; y++) {
+        for (let x = rx; x < rx + rw; x++) {
+          const i = (y * 64 + x) * 4;
+          rgba[i] = r;
+          rgba[i + 1] = g;
+          rgba[i + 2] = b;
+          rgba[i + 3] = a;
+        }
+      }
+    };
+
+    // Head base + hair + eyes + mouth
+    fillRect(0, 0, 32, 16, 198, 150, 122);
+    fillRect(8, 0, 8, 8, 63, 39, 24);
+    fillRect(0, 8, 8, 3, 63, 39, 24);
+    fillRect(8, 8, 8, 2, 63, 39, 24);
+    fillRect(16, 8, 8, 3, 63, 39, 24);
+    fillRect(24, 8, 8, 8, 63, 39, 24);
+    fillRect(9, 12, 1, 1, 255, 255, 255);
+    fillRect(14, 12, 1, 1, 255, 255, 255);
+    fillRect(10, 12, 1, 1, 79, 70, 229);
+    fillRect(13, 12, 1, 1, 79, 70, 229);
+    fillRect(11, 13, 2, 1, 154, 100, 73);
+    fillRect(10, 14, 4, 1, 107, 62, 40);
+
+    // Torso (teal shirt)
+    fillRect(16, 16, 24, 16, 14, 116, 144);
+
+    // Arms (skin + teal sleeves)
+    fillRect(40, 16, 16, 16, 198, 150, 122);
+    fillRect(32, 48, 16, 16, 198, 150, 122);
+    fillRect(40, 16, 16, 6, 14, 116, 144);
+    fillRect(32, 48, 16, 6, 14, 116, 144);
+
+    // Legs (indigo jeans + shoes)
+    fillRect(0, 16, 16, 16, 49, 46, 129);
+    fillRect(16, 48, 16, 16, 49, 46, 129);
+    fillRect(0, 30, 16, 2, 82, 82, 91);
+    fillRect(16, 62, 16, 2, 82, 82, 91);
+
+    cachedFallbackSkinPng = encodeRgbaToPng(64, 64, rgba);
+    return cachedFallbackSkinPng;
+  };
+
+  let cachedFallbackAvatarPng: Buffer | null = null;
+  const getFallbackSteveHeadPng = (): Buffer => {
+    if (cachedFallbackAvatarPng) return cachedFallbackAvatarPng;
+    const rgba = new Uint8Array(64 * 64 * 4);
+    const setBlock = (bx: number, by: number, r: number, g: number, b: number) => {
+      for (let py = by * 8; py < (by + 1) * 8; py++) {
+        for (let px = bx * 8; px < (bx + 1) * 8; px++) {
+          const i = (py * 64 + px) * 4;
+          rgba[i] = r;
+          rgba[i + 1] = g;
+          rgba[i + 2] = b;
+          rgba[i + 3] = 255;
+        }
+      }
+    };
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        if (y < 2 || ((x === 0 || x === 7) && y === 2)) {
+          setBlock(x, y, 63, 39, 24);
+        } else {
+          setBlock(x, y, 198, 150, 122);
+        }
+      }
+    }
+    setBlock(1, 4, 255, 255, 255);
+    setBlock(6, 4, 255, 255, 255);
+    setBlock(2, 4, 79, 70, 229);
+    setBlock(5, 4, 79, 70, 229);
+    setBlock(3, 5, 154, 100, 73);
+    setBlock(4, 5, 154, 100, 73);
+    setBlock(2, 6, 107, 62, 40);
+    setBlock(3, 6, 124, 71, 50);
+    setBlock(4, 6, 124, 71, 50);
+    setBlock(5, 6, 107, 62, 40);
+    cachedFallbackAvatarPng = encodeRgbaToPng(64, 64, rgba);
+    return cachedFallbackAvatarPng;
+  };
+
+  const isValidPngBuffer = (buf: Buffer): { valid: boolean; w: number; h: number } => {
+    if (buf.length < 32) return { valid: false, w: 0, h: 0 };
+    if (buf[0] !== 0x89 || buf[1] !== 0x50 || buf[2] !== 0x4e || buf[3] !== 0x47) {
+      return { valid: false, w: 0, h: 0 };
+    }
+    const w = buf.readUInt32BE(16);
+    const h = buf.readUInt32BE(20);
+    return { valid: w > 0 && h > 0, w, h };
+  };
 
   const resolveMojangSessionProfile = async (
     username: string
@@ -1460,7 +1813,7 @@ async function createApp() {
         `https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(username)}`,
         {
           headers: { 'User-Agent': 'SwxStudios/1.0' },
-          signal: AbortSignal.timeout(7000),
+          signal: AbortSignal.timeout(4000),
         }
       );
       if (profileRes.ok && profileRes.status !== 204) {
@@ -1479,7 +1832,7 @@ async function createApp() {
               `https://sessionserver.mojang.com/session/minecraft/profile/${encodeURIComponent(rawUuid)}`,
               {
                 headers: { 'User-Agent': 'SwxStudios/1.0' },
-                signal: AbortSignal.timeout(7000),
+                signal: AbortSignal.timeout(4000),
               }
             );
             if (sessRes.ok) {
@@ -1523,7 +1876,7 @@ async function createApp() {
         `https://playerdb.co/api/player/minecraft/${encodeURIComponent(username)}`,
         {
           headers: { 'User-Agent': 'SwxStudios/1.0' },
-          signal: AbortSignal.timeout(7000),
+          signal: AbortSignal.timeout(4000),
         }
       );
       if (pdbRes.ok) {
@@ -1575,6 +1928,7 @@ async function createApp() {
       // Ignore fallback error
     }
 
+    mcProfileCache.set(cacheKey, { expiresAt: Date.now() + 60_000, profile: null });
     return null;
   };
 
@@ -1614,6 +1968,16 @@ async function createApp() {
       return;
     }
 
+    const cacheKey = username.toLowerCase();
+    const cachedSkin = mcSkinCache.get(cacheKey);
+    if (cachedSkin && cachedSkin.expiresAt > Date.now()) {
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.send(cachedSkin.buffer);
+      return;
+    }
+
     const candidates: string[] = [];
     try {
       const resolved = await resolveMojangSessionProfile(username);
@@ -1632,26 +1996,38 @@ async function createApp() {
       `https://minotar.net/skin/${encodeURIComponent(username)}`
     );
 
-    for (const targetUrl of candidates) {
-      try {
-        const imgRes = await fetch(targetUrl, {
-          headers: { 'User-Agent': 'SwxStudios/1.0' },
-          signal: AbortSignal.timeout(7000),
-        });
-        if (!imgRes.ok) continue;
-        const arrBuf = await imgRes.arrayBuffer();
-        if (arrBuf.byteLength < 64) continue;
-        res.setHeader('Content-Type', 'image/png');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cache-Control', 'public, max-age=300');
-        res.send(Buffer.from(arrBuf));
-        return;
-      } catch {
-        // Try next candidate
-      }
-    }
+    try {
+      const buffer = await Promise.any(
+        candidates.map(async (targetUrl) => {
+          const imgRes = await fetch(targetUrl, {
+            headers: { 'User-Agent': 'SwxStudios/1.0' },
+            signal: AbortSignal.timeout(4500),
+          });
+          if (!imgRes.ok) throw new Error('Non-200 response');
+          const buf = Buffer.from(await imgRes.arrayBuffer());
+          const png = isValidPngBuffer(buf);
+          // Only accept valid Minecraft skin aspect ratios (64x64, 64x32, 128x128)
+          if (!png.valid || png.w < 64 || (png.h !== 32 && png.h !== 64 && png.h !== 128)) {
+            throw new Error('Invalid skin dimensions');
+          }
+          return buf;
+        })
+      );
 
-    res.status(404).json({ error: `Could not fetch skin texture for "${username}".` });
+      mcSkinCache.set(cacheKey, { expiresAt: Date.now() + 10 * 60_000, buffer });
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.send(buffer);
+      return;
+    } catch {
+      const fallback = getFallbackSteveSkinPng();
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('X-Swx-Skin-Fallback', 'steve');
+      res.setHeader('Cache-Control', 'public, max-age=60');
+      res.send(fallback);
+    }
   });
 
   app.get('/api/mc/avatar/:username', async (req: Request, res: Response) => {
@@ -1665,6 +2041,16 @@ async function createApp() {
     const size = Number.isFinite(rawSize) ? Math.max(16, Math.min(256, Math.round(rawSize))) : 128;
     const style = req.query.style === '3d' ? 'head' : 'avatar';
 
+    const cacheKey = `${style}:${size}:${username.toLowerCase()}`;
+    const cachedAvatar = mcAvatarCache.get(cacheKey);
+    if (cachedAvatar && cachedAvatar.expiresAt > Date.now()) {
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.send(cachedAvatar.buffer);
+      return;
+    }
+
     const candidates =
       style === 'head'
         ? [
@@ -1676,26 +2062,35 @@ async function createApp() {
             `https://minotar.net/helm/${encodeURIComponent(username)}/${size}.png`,
           ];
 
-    for (const targetUrl of candidates) {
-      try {
-        const imgRes = await fetch(targetUrl, {
-          headers: { 'User-Agent': 'SwxStudios/1.0' },
-          signal: AbortSignal.timeout(6000),
-        });
-        if (!imgRes.ok) continue;
-        const arrBuf = await imgRes.arrayBuffer();
-        if (arrBuf.byteLength < 64) continue;
-        res.setHeader('Content-Type', 'image/png');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cache-Control', 'public, max-age=300');
-        res.send(Buffer.from(arrBuf));
-        return;
-      } catch {
-        // Try next candidate
-      }
-    }
+    try {
+      const buffer = await Promise.any(
+        candidates.map(async (targetUrl) => {
+          const imgRes = await fetch(targetUrl, {
+            headers: { 'User-Agent': 'SwxStudios/1.0' },
+            signal: AbortSignal.timeout(4500),
+          });
+          if (!imgRes.ok) throw new Error('Non-200 response');
+          const buf = Buffer.from(await imgRes.arrayBuffer());
+          const png = isValidPngBuffer(buf);
+          if (!png.valid) throw new Error('Invalid PNG');
+          return buf;
+        })
+      );
 
-    res.status(404).json({ error: `Could not load head avatar for "${username}".` });
+      mcAvatarCache.set(cacheKey, { expiresAt: Date.now() + 10 * 60_000, buffer });
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.send(buffer);
+      return;
+    } catch {
+      const fallback = getFallbackSteveHeadPng();
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('X-Swx-Avatar-Fallback', 'steve');
+      res.setHeader('Cache-Control', 'public, max-age=60');
+      res.send(fallback);
+    }
   });
 
   // Vite middleware in development; static dist serving in production

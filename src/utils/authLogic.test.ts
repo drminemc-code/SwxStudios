@@ -139,5 +139,19 @@ describe('authLogic', () => {
     assert.equal(firebasePrimary.emailVerified, true);
     assert.equal(firebasePrimary.primaryProvider, 'google');
     assert.equal(computeInitials('Randelle'), 'RA');
+
+    const withPreferredMcHead = resolveDisplayIdentity({
+      firebaseUser: {
+        uid: 'uid-2',
+        displayName: 'Notch',
+        email: 'notch@mojang.com',
+        photoURL: null,
+        emailVerified: true,
+        providerData: [],
+      },
+      primaryOAuth: null,
+      preferredMcAvatarUrl: '/api/mc/avatar/Notch?s=128',
+    });
+    assert.equal(withPreferredMcHead.avatarUrl, '/api/mc/avatar/Notch?s=128');
   });
 });

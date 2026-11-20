@@ -1,15 +1,18 @@
 import React, { useEffect } from 'react';
 import {
+  BarChart3,
   BookOpen,
   Compass,
   Crown,
   Download,
   Home,
   LogIn,
+  Medal,
   Menu,
   MessageSquare,
   Search,
   Server,
+  Shield,
   ShieldCheck,
   Sparkles,
   Trophy,
@@ -17,7 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { DisplayIdentity, MembershipTier, NavTab } from '../types';
-import { isMinecraftAvatarUrl } from '../utils/skinLogic';
+import { MinecraftHeadAvatar } from './MinecraftHeadAvatar';
 import { TOOL_DIRECTORY } from './ToolsView';
 
 const LOGO_URL = '/assets/aistudio/Gemini_Generated_Image_m1vgo5m1vgo5m1vg_2bbe67cb.jpeg';
@@ -38,12 +41,16 @@ interface NavbarProps {
   isPremium: boolean;
   membershipTier: MembershipTier;
   downloadCount: number;
+  pendingFriendRequestsCount?: number;
 }
 
 const NAV_ITEMS: { id: NavTab; label: string; group: 'platform' | 'resources' }[] = [
   { id: 'home', label: 'Home', group: 'platform' },
   { id: 'tools', label: 'Tools', group: 'platform' },
   { id: 'servers', label: 'Servers', group: 'platform' },
+  { id: 'tiers', label: 'Tier List', group: 'platform' },
+  { id: 'ranks', label: 'Ranks & Friends', group: 'platform' },
+  { id: 'stats', label: 'Studio Stats', group: 'platform' },
   { id: 'guides', label: 'Guides', group: 'platform' },
   { id: 'downloads', label: 'Downloads', group: 'resources' },
   { id: 'exclusive', label: 'Exclusive', group: 'resources' },
@@ -59,6 +66,12 @@ function navItemIcon(id: NavTab) {
       return <Wrench className="h-4 w-4 shrink-0" aria-hidden="true" />;
     case 'servers':
       return <Server className="h-4 w-4 shrink-0" aria-hidden="true" />;
+    case 'tiers':
+      return <Medal className="h-4 w-4 shrink-0" aria-hidden="true" />;
+    case 'ranks':
+      return <Shield className="h-4 w-4 shrink-0" aria-hidden="true" />;
+    case 'stats':
+      return <BarChart3 className="h-4 w-4 shrink-0" aria-hidden="true" />;
     case 'guides':
       return <BookOpen className="h-4 w-4 shrink-0" aria-hidden="true" />;
     case 'downloads':
@@ -89,9 +102,9 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   return (
     <header className="sticky top-0 z-40 border-b border-zinc-800/80 bg-[#08080a]/95 backdrop-blur-md">
-      <div className="flex h-14 w-full items-center justify-between gap-2 px-3 sm:gap-4 sm:px-5">
+      <div className="flex h-14 w-full items-center justify-between gap-1.5 px-2.5 sm:gap-4 sm:px-5">
         {/* Zone 1: Clickable 3-Line Menu Trigger + Brand Wordmark */}
-        <div className="flex shrink-0 items-center gap-2.5">
+        <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
           <button
             type="button"
             onClick={onToggleSidebar}
@@ -114,7 +127,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               e.preventDefault();
               onSelectTab('home');
             }}
-            className="flex shrink-0 items-center gap-2.5 whitespace-nowrap rounded-md text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/60"
+            className="flex shrink-0 items-center gap-2 sm:gap-2.5 whitespace-nowrap rounded-md text-zinc-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500/60"
           >
             <img
               src={LOGO_URL}
@@ -144,7 +157,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         </button>
 
         {/* Zone 3: Action Cluster */}
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
           <button
             type="button"
             onClick={onOpenSearch}
@@ -161,19 +174,12 @@ export const Navbar: React.FC<NavbarProps> = ({
               aria-label="Open account and connected services"
               className="inline-flex h-8 max-w-[140px] items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900/90 px-2.5 text-xs font-semibold text-zinc-100 whitespace-nowrap shrink-0 transition-colors hover:border-zinc-500 hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
             >
-              {identity.avatarUrl ? (
-                <img
-                  src={identity.avatarUrl}
-                  alt=""
-                  className={`h-5 w-5 shrink-0 rounded object-cover ${
-                    isMinecraftAvatarUrl(identity.avatarUrl) ? 'mc-pixelated' : ''
-                  }`}
-                />
-              ) : (
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-zinc-800 text-[10px] font-bold text-white">
-                  {identity.initials}
-                </span>
-              )}
+              <MinecraftHeadAvatar
+                avatarUrl={identity.avatarUrl}
+                alt=""
+                initials={identity.initials}
+                className="h-5 w-5 shrink-0 rounded border border-zinc-700 bg-zinc-950"
+              />
               <span className="truncate">{identity.displayName}</span>
             </button>
           ) : (
@@ -233,6 +239,7 @@ interface WorkspaceSidebarProps {
   identity: DisplayIdentity;
   isOwner: boolean;
   downloadCount: number;
+  pendingFriendRequestsCount?: number;
 }
 
 export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
@@ -248,6 +255,7 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
   identity,
   isOwner,
   downloadCount,
+  pendingFriendRequestsCount = 0,
 }) => {
   const visibleNavItems = isOwner
     ? [...NAV_ITEMS, { id: 'admin' as NavTab, label: 'Admin Panel', group: 'resources' as const }]
@@ -305,6 +313,11 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                     {!isCompact && item.id === 'tools' && (
                       <span className="font-display-mono text-[10px] text-rose-400 tabular-nums">
                         {TOOL_DIRECTORY.length}
+                      </span>
+                    )}
+                    {!isCompact && item.id === 'ranks' && pendingFriendRequestsCount > 0 && (
+                      <span className="rounded bg-rose-600 px-1.5 py-0.5 font-display-mono text-[10px] font-bold text-white tabular-nums">
+                        {pendingFriendRequestsCount}
                       </span>
                     )}
                   </button>
@@ -413,19 +426,12 @@ export const WorkspaceSidebar: React.FC<WorkspaceSidebarProps> = ({
                 className="flex w-full items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-[11px] font-semibold text-zinc-100 hover:border-zinc-600"
               >
                 <span className="flex items-center gap-2 min-w-0">
-                  {identity.avatarUrl ? (
-                    <img
-                      src={identity.avatarUrl}
-                      alt=""
-                      className={`h-5 w-5 shrink-0 rounded object-cover ${
-                        isMinecraftAvatarUrl(identity.avatarUrl) ? 'mc-pixelated' : ''
-                      }`}
-                    />
-                  ) : (
-                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-zinc-800 text-[10px] font-bold text-white">
-                      {identity.initials}
-                    </span>
-                  )}
+                  <MinecraftHeadAvatar
+                    avatarUrl={identity.avatarUrl}
+                    alt=""
+                    initials={identity.initials}
+                    className="h-5 w-5 shrink-0 rounded border border-zinc-700 bg-zinc-950"
+                  />
                   <span>Account</span>
                 </span>
                 <span className="max-w-[96px] truncate text-rose-300">

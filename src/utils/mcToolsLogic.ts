@@ -1,4 +1,10 @@
-import { ServerEdition } from '../types';
+import {
+  LiveServerStatus,
+  MinecraftServerListing,
+  ProbeRegionId,
+  ServerEdition,
+  ServerTelemetrySnapshot,
+} from '../types';
 import { clampString } from './authLogic';
 
 export interface McFormattedSegment {
@@ -1461,3 +1467,145 @@ export function convertFancyTextFont(input: string, style: FancyFontStyleId): st
   return out;
 }
 
+export const PROBE_REGIONS: Array<{ id: ProbeRegionId; label: string; shortLabel: string }> = [
+  { id: 'asia', label: 'Asia (Singapore)', shortLabel: 'Asia · SG' },
+  { id: 'global', label: 'Global Anycast', shortLabel: 'Global' },
+  { id: 'na', label: 'North America', shortLabel: 'NA · US' },
+  { id: 'eu', label: 'Europe', shortLabel: 'EU · Central' },
+];
+
+export function resolveProbeRegionInfo(region?: string | null): {
+  id: ProbeRegionId;
+  label: string;
+  shortLabel: string;
+} {
+  const norm = (region || '').trim().toLowerCase();
+  return PROBE_REGIONS.find((r) => r.id === norm) || PROBE_REGIONS[0];
+}
+
+export const RETIRED_BASELINE_SERVER_IDS = new Set([
+  'live-hazzardsmp',
+  'live-syvoxsmp',
+  'live-ecoverprac',
+]);
+
+export const RETIRED_BASELINE_SERVER_HOSTS = new Set([
+  'hazzardsmp.ultramc.co',
+  'syvoxsmp.playwithbao.com',
+  'ecoverseprac.cc.cd:43845',
+  'ecoverprac.minefort.com',
+]);
+
+export function filterActiveServerListings<T extends { id: string; address: string }>(
+  listings: T[]
+): T[] {
+  return listings.filter((item) => {
+    const idLower = item.id.trim().toLowerCase();
+    const hostLower = item.address.trim().toLowerCase();
+    return (
+      !RETIRED_BASELINE_SERVER_IDS.has(idLower) &&
+      !RETIRED_BASELINE_SERVER_HOSTS.has(hostLower)
+    );
+  });
+}
+
+export type ServerSortMode =
+  | 'featured'
+  | 'votes'
+  | 'tps'
+  | 'ping'
+  | 'players'
+  | 'newest';
+
+export function resolveServerEffectivePingMs(
+  server: MinecraftServerListing,
+  liveStatus?: LiveServerStatus,
+  telemetry?: ServerTelemetrySnapshot
+): number | null {
+  if (typeof liveStatus?.pingMs === 'number' && Number.isFinite(liveStatus.pingMs)) {
+    return liveStatus.pingMs;
+  }
+  if (typeof telemetry?.avgPingMs === 'number' && Number.isFinite(telemetry.avgPingMs)) {
+    return telemetry.avgPingMs;
+  }
+  if (typeof server.pingMs === 'number' && Number.isFinite(server.pingMs)) {
+    return server.pingMs;
+  }
+  return null;
+}
+
+export function resolveServerEffectiveTps(
+  server: MinecraftServerListing,
+  telemetry?: ServerTelemetrySnapshot
+): number | null {
+  if (typeof telemetry?.tps === 'number' && Number.isFinite(telemetry.tps)) {
+    return telemetry.tps;
+  }
+  if (typeof server.tps === 'number' && Number.isFinite(server.tps)) {
+    return server.tps;
+  }
+  return null;
+}
+
+export function sortServerListings(
+  servers: MinecraftServerListing[],
+  sortMode: ServerSortMode,
+  liveStatusMap: Record<string, LiveServerStatus> = {},
+  telemetryMap: Record<string, ServerTelemetrySnapshot> = {}
+): MinecraftServerListing[] {
+  const getTelemetry = (srv: MinecraftServerListing) =>
+    telemetryMap[srv.address.toLowerCase()] || telemetryMap[srv.id.toLowerCase()];
+
+  return [...servers].sort((a, b) => {
+    if (sortMode === 'votes') {
+      if (b.votes !== a.votes) return b.votes - a.votes;
+      const aPlayers = liveStatusMap[a.id]?.playersOnline ?? 0;
+      const bPlayers = liveStatusMap[b.id]?.playersOnline ?? 0;
+      return bPlayers - aPlayers || a.name.localeCompare(b.name);
+    }
+    if (sortMode === 'tps') {
+      const aTps = resolveServerEffectiveTps(a, getTelemetry(a));
+      const bTps = resolveServerEffectiveTps(b, getTelemetry(b));
+      const aVal = aTps ?? -1;
+      const bVal = bTps ?? -1;
+      if (bVal !== aVal) return bVal - aVal;
+      if (b.votes !== a.votes) return b.votes - a.votes;
+      const aPlayers = liveStatusMap[a.id]?.playersOnline ?? 0;
+      const bPlayers = liveStatusMap[b.id]?.playersOnline ?? 0;
+      return bPlayers - aPlayers || a.name.localeCompare(b.name);
+    }
+    if (sortMode === 'ping') {
+      const aPing = resolveServerEffectivePingMs(a, liveStatusMap[a.id], getTelemetry(a));
+      const bPing = resolveServerEffectivePingMs(b, liveStatusMap[b.id], getTelemetry(b));
+      const aVal = aPing !== null && aPing >= 0 ? aPing : Number.POSITIVE_INFINITY;
+      const bVal = bPing !== null && bPing >= 0 ? bPing : Number.POSITIVE_INFINITY;
+      if (aVal !== bVal) return aVal - bVal;
+      if (b.votes !== a.votes) return b.votes - a.votes;
+      const aPlayers = liveStatusMap[a.id]?.playersOnline ?? 0;
+      const bPlayers = liveStatusMap[b.id]?.playersOnline ?? 0;
+      return bPlayers - aPlayers || a.name.localeCompare(b.name);
+    }
+    if (sortMode === 'players') {
+      const aPlayers = liveStatusMap[a.id]?.playersOnline ?? -1;
+      const bPlayers = liveStatusMap[b.id]?.playersOnline ?? -1;
+      if (bPlayers !== aPlayers) return bPlayers - aPlayers;
+      return b.votes - a.votes;
+    }
+    if (sortMode === 'newest') {
+      return b.id.localeCompare(a.id);
+    }
+    if (a.featured !== b.featured) return a.featured ? -1 : 1;
+    const prio = ['donutsmp.net', 'mcpvp.club', 'acersmp.xyz', 'mc.hypixel.net'];
+    const aP = prio.indexOf(a.address.trim().toLowerCase());
+    const bP = prio.indexOf(b.address.trim().toLowerCase());
+    if (aP !== -1 || bP !== -1) {
+      if (aP === -1) return 1;
+      if (bP === -1) return -1;
+      return aP - bP;
+    }
+    const aPlayers = liveStatusMap[a.id]?.playersOnline ?? 0;
+    const bPlayers = liveStatusMap[b.id]?.playersOnline ?? 0;
+    if (aPlayers !== bPlayers) return bPlayers - aPlayers;
+    return b.votes - a.votes;
+  });
+}

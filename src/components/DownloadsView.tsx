@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Bookmark, Download, Search, X } from 'lucide-react';
 import { CATEGORIES } from '../data/catalog';
 import { CategoryId, MembershipTier, ResourceItem, ResourceTierFilter, SortOption } from '../types';
@@ -46,6 +46,13 @@ export const DownloadsView: React.FC<DownloadsViewProps> = ({
   const [category, setCategory] = useState<CategoryId | 'all'>(initialCategory);
   const [tierFilter, setTierFilter] = useState<ResourceTierFilter>(initialTier);
   const [sortBy, setSortBy] = useState<SortOption>('downloads');
+
+  useEffect(() => {
+    setQuery(initialQuery);
+    setCategory(initialCategory);
+    setTierFilter(initialTier);
+    setSubTab('all');
+  }, [initialQuery, initialCategory, initialTier]);
 
   const baseList =
     subTab === 'history'

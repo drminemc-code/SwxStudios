@@ -83,6 +83,46 @@ export function extractMinecraftUsernameFromAvatarUrl(url: string | null | undef
   return null;
 }
 
+export const POPULAR_MINECRAFT_HEADS = [
+  'Steve',
+  'Alex',
+  'Notch',
+  'Dream',
+  'Technoblade',
+] as const;
+
+export function resolveAuthMinecraftAvatarChoice(input: {
+  mode: 'signin' | 'signup';
+  useMcHeadAvatar: boolean;
+  mcUsername?: string;
+  displayName?: string;
+  email?: string;
+  style?: '2d' | '3d';
+  size?: number;
+  origin?: string;
+}): string | null {
+  if (!input.useMcHeadAvatar) return null;
+
+  const explicit = normalizeMinecraftUsername(input.mcUsername);
+  const ign =
+    input.mode === 'signup'
+      ? deriveMinecraftIgnSuggestion({
+          mcUsername: explicit,
+          displayName: input.displayName,
+          email: input.email,
+        })
+      : explicit ||
+        deriveMinecraftIgnSuggestion({
+          email: input.email,
+        });
+
+  return buildMinecraftHeadAvatarUrl(ign, {
+    size: input.size ?? 128,
+    style: input.style ?? '2d',
+    origin: input.origin,
+  });
+}
+
 /**
  * Generates exact pixel sub-rectangles (in 64x64 UV skin space) for a Minecraft cuboidal limb/body part.
  * Convention matches Mojang's official 64x64 skin texture layout:

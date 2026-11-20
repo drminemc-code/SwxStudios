@@ -20,6 +20,7 @@ import {
   convertOverworldNether,
   convertTextFormat,
   evaluateEnchantments,
+  filterActiveServerListings,
   generateHexGradient,
   inspectJarBytesForPatterns,
   isSlimeChunk,
@@ -27,7 +28,9 @@ import {
   parseMinecraftFormattedSegments,
   parseTopPlayerEntry,
   parseTopPlayersText,
+  resolveProbeRegionInfo,
   seedToNumber,
+  sortServerListings,
   toServerPropertiesMotd,
   validateJsonText,
   validateServerDraft,
@@ -254,3 +257,120 @@ test('mcToolsLogic converts fancy Unicode text fonts while preserving Minecraft 
   assert.notEqual(convertFancyTextFont('Hypixel', 'gothic'), 'Hypixel');
 });
 
+test('mcToolsLogic defaults probe region to Asia (Singapore) and filters retired servers', () => {
+  assert.deepEqual(resolveProbeRegionInfo(undefined), {
+    id: 'asia',
+    label: 'Asia (Singapore)',
+    shortLabel: 'Asia · SG',
+  });
+  assert.deepEqual(resolveProbeRegionInfo('global'), {
+    id: 'global',
+    label: 'Global Anycast',
+    shortLabel: 'Global',
+  });
+  assert.deepEqual(resolveProbeRegionInfo('unknown'), {
+    id: 'asia',
+    label: 'Asia (Singapore)',
+    shortLabel: 'Asia · SG',
+  });
+
+  const filtered = filterActiveServerListings([
+    { id: 'live-hazzardsmp', address: 'hazzardsmp.ultramc.co' },
+    { id: 'custom-1', address: 'ecoverseprac.cc.cd:43845' },
+    { id: 'custom-2', address: 'syvoxsmp.playwithbao.com' },
+    { id: 'live-donutsmp', address: 'donutsmp.net' },
+    { id: 'live-mcpvp', address: 'mcpvp.club' },
+    { id: 'live-acersmp', address: 'acersmp.xyz' },
+  ]);
+  assert.deepEqual(
+    filtered.map((s) => s.address),
+    ['donutsmp.net', 'mcpvp.club', 'acersmp.xyz']
+  );
+});
+
+test('mcToolsLogic sorts server listings by Most Voted, Highest TPS, and Lowest Ping', () => {
+  const baseServers = [
+    {
+      id: 'srv-a',
+      name: 'AlphaSMP',
+      address: 'alpha.example.net',
+      edition: 'Java' as const,
+      version: '1.21.4',
+      motd: 'Alpha',
+      gameModes: ['Survival'],
+      approved: true,
+      featured: false,
+      votes: 45,
+      tps: 18.2,
+      pingMs: 95,
+      submittedBy: 'u1',
+      submittedByName: 'Alice',
+    },
+    {
+      id: 'srv-b',
+      name: 'BetaPvP',
+      address: 'beta.example.net',
+      edition: 'Java' as const,
+      version: '1.21.4',
+      motd: 'Beta',
+      gameModes: ['Crystal PvP'],
+      approved: true,
+      featured: true,
+      votes: 220,
+      tps: 19.6,
+      pingMs: 42,
+      submittedBy: 'u2',
+      submittedByName: 'Bob',
+    },
+    {
+      id: 'srv-c',
+      name: 'GammaRealms',
+      address: 'gamma.example.net',
+      edition: 'Java' as const,
+      version: '1.21.4',
+      motd: 'Gamma',
+      gameModes: ['Skyblock'],
+      approved: true,
+      featured: false,
+      votes: 120,
+      submittedBy: 'u3',
+      submittedByName: 'Charlie',
+    },
+  ];
+
+  const liveMap = {
+    'srv-a': { loading: false, online: true, pingMs: 18, playersOnline: 30, playersMax: 100 },
+    'srv-b': { loading: false, online: true, pingMs: 55, playersOnline: 80, playersMax: 200 },
+  };
+  const telemetryMap = {
+    'gamma.example.net': {
+      serverKey: 'gamma.example.net',
+      address: 'gamma.example.net',
+      tps: 20.0,
+      mspt: 9.4,
+      avgPingMs: 31,
+      playersOnline: 10,
+      playersMax: 50,
+      topPlayers: [],
+      source: 'spark',
+      updatedAt: 'now',
+    },
+  };
+
+  assert.deepEqual(
+    sortServerListings(baseServers, 'votes', liveMap, telemetryMap).map((s) => s.id),
+    ['srv-b', 'srv-c', 'srv-a']
+  );
+
+  assert.deepEqual(
+    sortServerListings(baseServers, 'tps', liveMap, telemetryMap).map((s) => s.id),
+    ['srv-c', 'srv-b', 'srv-a']
+  );
+
+  // Live pingMs (18ms on srv-a) takes precedence over fallback srv.pingMs (95ms),
+  // telemetry avgPingMs (31ms on srv-c) ranks second, live 55ms on srv-b ranks third.
+  assert.deepEqual(
+    sortServerListings(baseServers, 'ping', liveMap, telemetryMap).map((s) => s.id),
+    ['srv-a', 'srv-c', 'srv-b']
+  );
+});
